@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">VeilGate</string>
+    <string name="connect">CONNECT</string>
+    <string name="disconnect">DISCONNECT</string>
+    <string name="connecting">Connecting...</string>
+    <string name="connected">CONNECTED</string>
+    <string name="disconnected">DISCONNECTED</string>
+    <string name="time_left">Time Remaining</string>
+    <string name="data_left">Data Limit</string>
+    <string name="server_select">Select Node</string>
+</resources>
