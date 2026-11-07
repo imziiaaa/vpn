@@ -16,7 +16,12 @@ object NetworkClient {
 
     fun createApi(context: Context, baseUrl: String = DEFAULT_BASE_URL, appKey: String? = null): VeilGateApi {
         val loggingInterceptor = HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BODY
+            level = if (BuildConfig.DEBUG) {
+                HttpLoggingInterceptor.Level.BASIC
+            } else {
+                HttpLoggingInterceptor.Level.NONE
+            }
+            redactHeader("X-App-Key")
         }
 
         val authInterceptor = Interceptor { chain ->

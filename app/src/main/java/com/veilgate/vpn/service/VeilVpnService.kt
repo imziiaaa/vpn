@@ -209,11 +209,19 @@ class VeilVpnService : VpnService() {
                 .addRoute("0.0.0.0", 0)
                 .setBlocking(true)
 
-            // DNS configuration with robust fallback
+            // IPv6 configuration to prevent IPv6 traffic & DNS bypass leaks
+            try {
+                builder.addAddress("fd00::2", 128)
+                builder.addRoute("::", 0)
+            } catch (e: Exception) {
+                Log.w(TAG, "IPv6 route configuration note: ${e.message}")
+            }
+
+            // DNS configuration with robust dual-stack fallback
             val dnsList = if (!iface.dns.isNullOrBlank()) {
                 iface.dns.split(",")
             } else {
-                listOf("1.1.1.1", "8.8.8.8")
+                listOf("1.1.1.1", "8.8.8.8", "2606:4700:4700::1111", "2001:4860:4860::8888")
             }
 
             dnsList.forEach { s ->
