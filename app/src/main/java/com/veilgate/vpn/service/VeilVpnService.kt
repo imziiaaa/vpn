@@ -140,14 +140,14 @@ class VeilVpnService : VpnService() {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private val serviceScope = CoroutineScope(Dispatchers.Default)
 
-    private var serverName: String = "VeilGate Node"
+    private var serverName: String = "Raven Node"
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action ?: return START_NOT_STICKY
 
         when (action) {
             ACTION_START -> {
-                serverName = intent.getStringExtra(EXTRA_SERVER_NAME) ?: "VeilGate Node"
+                serverName = intent.getStringExtra(EXTRA_SERVER_NAME) ?: "Raven Node"
 
                 val iface = AwgInterfaceConfig(
                     privateKey = intent.getStringExtra(EXTRA_PRIVATE_KEY) ?: "",
@@ -203,7 +203,7 @@ class VeilVpnService : VpnService() {
             // Build TUN interface
             val cleanIp = iface.address.split("/")[0].trim()
             val builder = Builder()
-                .setSession("VeilGate ($serverName)")
+                .setSession("Raven VPN ($serverName)")
                 .setMtu(iface.mtu.coerceIn(1280, 1420))
                 .addAddress(cleanIp, 32)
                 .addRoute("0.0.0.0", 0)
@@ -316,7 +316,8 @@ class VeilVpnService : VpnService() {
 
             var handshakeOk = false
             val startWait = System.currentTimeMillis()
-            while (System.currentTimeMillis() - startWait < 8000L && isActive) {
+            // Allow up to 10 seconds per attempt to accommodate high-latency/cross-border handshakes
+            while (System.currentTimeMillis() - startWait < 10000L && isActive) {
                 val health = getHandshakeHealth()
                 if (health.lastHandshakeSec > 0L) {
                     handshakeOk = true
@@ -327,13 +328,13 @@ class VeilVpnService : VpnService() {
             }
 
             if (!handshakeOk) {
-                Log.w(TAG, "Pre-connection attempt $attempt/3: No handshake received within 8s.")
+                Log.w(TAG, "Pre-connection attempt $attempt/3: No handshake received within 10s.")
                 if (attempt < 3) {
                     Log.i(TAG, "Automatically retrying handshake (attempt ${attempt + 1}/3)...")
                     delay(1000L)
                     continue
                 } else {
-                    Log.e(TAG, "All 3 pre-connection handshake attempts failed.")
+                    Log.e(TAG, "All 3 pre-connection handshake attempts failed (30s total). Aborting.")
                     return@withContext false
                 }
             }
@@ -646,7 +647,7 @@ class VeilVpnService : VpnService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val title = if (isReconnecting) "VeilGate · Reconnecting..." else "VeilGate · $serverName"
+        val title = if (isReconnecting) "Raven VPN · Reconnecting..." else "Raven VPN · $serverName"
         val timeStr = SessionLimits.formatSeconds(remainingSeconds)
         val dataStr = "${SessionLimits.formatBytes(usedBytes)} / 1.00 GB"
         val contentText = if (isReconnecting) {

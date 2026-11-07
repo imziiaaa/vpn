@@ -200,7 +200,7 @@ fun TopAppBar(status: VpnStatus, onSettingsClick: () -> Unit) {
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = "VEILGATE",
+                text = "RAVEN VPN",
                 color = TextPrimary,
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.Bold,
