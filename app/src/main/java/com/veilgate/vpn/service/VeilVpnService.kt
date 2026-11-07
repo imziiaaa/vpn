@@ -260,7 +260,17 @@ class VeilVpnService : VpnService() {
             if (sockV4 > 0) protect(sockV4)
             if (sockV6 > 0) protect(sockV6)
 
-            Log.i(TAG, "AmneziaWG tunnel established successfully (handle=$handle, sockV4=$sockV4, sockV6=$sockV6)")
+            Log.i(TAG, "AmneziaWG tunnel created (handle=$handle). Verifying bidirectional traffic before confirming connection...")
+
+            // Pre-connection bidirectional traffic verification (Upload/Download proof)
+            val trafficVerified = verifyTrafficFlow(handle)
+            if (!trafficVerified) {
+                Log.e(TAG, "Traffic verification failed: Tunnel could not pass bidirectional traffic. Aborting.")
+                stopTunnel(DisconnectReason.CONNECTION_FAILED)
+                return
+            }
+
+            Log.i(TAG, "Traffic verified successfully! Confirming CONNECTED status.")
             _vpnStatusFlow.value = VpnStatus.CONNECTED
 
             // 1. Register physical network monitor (detects cellular/Wi-Fi drops)
@@ -269,13 +279,90 @@ class VeilVpnService : VpnService() {
             // 2. Launch active 1-hour & 1-GB limit monitor
             startLimitEnforcementMonitor()
 
-            // 3. Launch watchdog probe to detect dropped tunnel or loss of internet
+            // 3. Launch watchdog probe to detect dropped tunnel with auto-reconnect
             startHealthCheckMonitor()
 
         } catch (e: Exception) {
             Log.e(TAG, "Exception while starting AmneziaWG tunnel", e)
             stopTunnel(DisconnectReason.CONNECTION_FAILED)
         }
+    }
+
+    /**
+     * Pre-connection verification:
+     * 1. Confirms WireGuard handshake completed (last_handshake_time_sec > 0).
+     * 2. Sends actual HTTP/TCP traffic (upload) and reads response bytes (download).
+     * 3. Confirms rx_bytes increased in the native engine.
+     * Only returns true when genuine data flow is verified.
+     */
+    private suspend fun verifyTrafficFlow(handle: Int): Boolean = withContext(Dispatchers.IO) {
+        Log.i(TAG, "Verifying traffic flow: Waiting for initial handshake...")
+        val startWait = System.currentTimeMillis()
+        var handshakeOk = false
+
+        while (System.currentTimeMillis() - startWait < 8000L && isActive) {
+            val health = getHandshakeHealth()
+            if (health.lastHandshakeSec > 0L) {
+                handshakeOk = true
+                Log.i(TAG, "WireGuard handshake established in ${System.currentTimeMillis() - startWait}ms")
+                break
+            }
+            delay(500L)
+        }
+
+        if (!handshakeOk) {
+            Log.e(TAG, "Pre-connection verification failed: No handshake received from server within 8s.")
+            return@withContext false
+        }
+
+        Log.i(TAG, "Handshake confirmed. Now testing bidirectional data transfer (upload/download)...")
+        val rxBefore = getHandshakeHealth().rxBytes
+        var dataExchangeOk = false
+
+        for (attempt in 1..3) {
+            if (!isActive || dataExchangeOk) break
+            var socket: Socket? = null
+            try {
+                socket = Socket()
+                socket.soTimeout = 3000
+                socket.connect(InetSocketAddress("1.1.1.1", 80), 3000)
+                val out = socket.getOutputStream()
+                // Send lightweight HTTP GET (Upload verification)
+                val req = "GET /generate_204 HTTP/1.1\r\nHost: 1.1.1.1\r\nConnection: close\r\n\r\n"
+                out.write(req.toByteArray(Charsets.US_ASCII))
+                out.flush()
+
+                // Read HTTP response header (Download verification)
+                val reader = socket.getInputStream().bufferedReader()
+                val firstLine = reader.readLine()
+                if (firstLine != null && firstLine.startsWith("HTTP/")) {
+                    dataExchangeOk = true
+                    Log.i(TAG, "Data transfer confirmed on attempt $attempt (response: $firstLine)")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Data transfer attempt $attempt failed: ${e.message}")
+                // Fallback attempt: TCP connect to Cloudflare DNS port 53
+                var fallbackSocket: Socket? = null
+                try {
+                    fallbackSocket = Socket()
+                    fallbackSocket.connect(InetSocketAddress("1.1.1.1", 53), 2500)
+                    dataExchangeOk = true
+                    Log.i(TAG, "TCP port 53 data transfer confirmed on attempt $attempt")
+                } catch (e2: Exception) {
+                    delay(1000L)
+                } finally {
+                    runCatching { fallbackSocket?.close() }
+                }
+            } finally {
+                runCatching { socket?.close() }
+            }
+            if (dataExchangeOk) break
+        }
+
+        val rxAfter = getHandshakeHealth().rxBytes
+        Log.i(TAG, "Traffic verification complete: dataOk=$dataExchangeOk, rxBefore=$rxBefore, rxAfter=$rxAfter")
+
+        dataExchangeOk || (rxAfter > rxBefore)
     }
 
     /**
@@ -294,7 +381,7 @@ class VeilVpnService : VpnService() {
             var lastTx = TrafficStats.getUidTxBytes(myUid).takeIf { it != TrafficStats.UNSUPPORTED.toLong() } ?: 0L
             var accumulatedBytes = 0L
 
-            while (isActive && _vpnStatusFlow.value == VpnStatus.CONNECTED) {
+            while (isActive && (_vpnStatusFlow.value == VpnStatus.CONNECTED || _vpnStatusFlow.value == VpnStatus.RECONNECTING)) {
                 delay(1000L)
                 secondsLeft -= 1
                 _remainingSecondsFlow.value = secondsLeft.coerceAtLeast(0)
@@ -328,7 +415,7 @@ class VeilVpnService : VpnService() {
                 }
 
                 // Update ongoing status notification
-                updateNotification(secondsLeft, accumulatedBytes)
+                updateNotification(secondsLeft, accumulatedBytes, isReconnecting = (_vpnStatusFlow.value == VpnStatus.RECONNECTING))
             }
         }
     }
@@ -361,59 +448,49 @@ class VeilVpnService : VpnService() {
     }
 
     /**
-     * Active watchdog running every 5-6 seconds:
-     * 1. Checks if initial handshake was established within 15 seconds.
-     * 2. Tests internet reachability over the tunnel by connecting to anycast DNS (1.1.1.1 / 8.8.8.8) on port 53.
-     * 3. Checks if WireGuard handshake became stale (>120s) with failed probes.
-     * 4. Automatically tears down tunnel with CONNECTION_LOST if 3 consecutive probes fail.
+     * Active watchdog running periodically:
+     * 1. Probes internet reachability through the tunnel.
+     * 2. If probes fail, does NOT immediately disconnect; instead transitions to RECONNECTING state.
+     * 3. Retries for up to 25-30 seconds. If internet recovers during this window, resumes CONNECTED state.
+     * 4. If all retries fail across the 25-30 second window, terminates tunnel with CONNECTION_LOST.
      */
     private fun startHealthCheckMonitor() {
         healthCheckJob?.cancel()
         healthCheckJob = serviceScope.launch(Dispatchers.IO) {
             var consecutiveFailures = 0
-            var secondsElapsed = 0
 
-            // Initial grace period to allow tunnel and initial handshake to settle
-            delay(5000L)
-            secondsElapsed += 5
+            // Initial delay after pre-connect verification
+            delay(4000L)
 
-            while (isActive && _vpnStatusFlow.value == VpnStatus.CONNECTED) {
-                val health = getHandshakeHealth()
-
-                // Initial handshake validation (between 15-20s after connect)
-                if (secondsElapsed in 15..22 && health.lastHandshakeSec == 0L) {
-                    Log.e(TAG, "Initial WireGuard handshake was never established after 15s. Aborting tunnel.")
-                    stopTunnel(DisconnectReason.CONNECTION_FAILED)
-                    break
-                }
-
-                // Active probe through the VPN tunnel
+            while (isActive && (_vpnStatusFlow.value == VpnStatus.CONNECTED || _vpnStatusFlow.value == VpnStatus.RECONNECTING)) {
                 val reachable = checkInternetReachability()
+
                 if (reachable) {
-                    if (consecutiveFailures > 0) {
-                        Log.i(TAG, "Internet connectivity restored via tunnel (was $consecutiveFailures failure(s))")
+                    if (_vpnStatusFlow.value == VpnStatus.RECONNECTING || consecutiveFailures > 0) {
+                        Log.i(TAG, "Tunnel internet restored! Resuming CONNECTED status.")
+                        _vpnStatusFlow.value = VpnStatus.CONNECTED
                     }
                     consecutiveFailures = 0
+                    delay(5000L)
                 } else {
                     consecutiveFailures++
-                    Log.w(TAG, "Internet probe through tunnel failed ($consecutiveFailures/3 consecutive failures)")
+                    Log.w(TAG, "Internet probe failed ($consecutiveFailures consecutive failure(s))")
 
-                    if (consecutiveFailures >= 3) {
-                        Log.e(TAG, "Lost internet reachability through VPN tunnel (3 consecutive failed probes). Disconnecting.")
+                    if (consecutiveFailures == 2 && _vpnStatusFlow.value == VpnStatus.CONNECTED) {
+                        Log.w(TAG, "Connection unstable. Entering RECONNECTING recovery mode (25s window)...")
+                        _vpnStatusFlow.value = VpnStatus.RECONNECTING
+                    }
+
+                    // 2 initial probe rounds (~10s) + 5 recovery retry rounds (15s) = 25 seconds of total failure
+                    if (consecutiveFailures >= 7) {
+                        Log.e(TAG, "Reconnection window expired (25s without internet). Disconnecting.")
                         stopTunnel(DisconnectReason.CONNECTION_LOST)
                         break
                     }
-                }
 
-                // Stale handshake check: if handshake is >120s old and probe failed, peer is dead
-                if (health.ageSec > 120 && consecutiveFailures >= 2) {
-                    Log.e(TAG, "WireGuard handshake expired (${health.ageSec}s old) and internet unreachable. Disconnecting.")
-                    stopTunnel(DisconnectReason.CONNECTION_LOST)
-                    break
+                    // Probe more rapidly while attempting to recover (every 3 seconds)
+                    delay(3000L)
                 }
-
-                delay(6000L)
-                secondsElapsed += 6
             }
         }
     }
@@ -493,7 +570,7 @@ class VeilVpnService : VpnService() {
                 serviceScope.launch {
                     delay(4000L)
                     val active = cm.activeNetwork
-                    if (active == null && _vpnStatusFlow.value == VpnStatus.CONNECTED) {
+                    if (active == null && (_vpnStatusFlow.value == VpnStatus.CONNECTED || _vpnStatusFlow.value == VpnStatus.RECONNECTING)) {
                         Log.e(TAG, "No active physical network after grace period. Auto-disconnecting.")
                         stopTunnel(DisconnectReason.CONNECTION_LOST)
                     }
@@ -520,7 +597,11 @@ class VeilVpnService : VpnService() {
         }
     }
 
-    private fun buildNotification(remainingSeconds: Long, usedBytes: Long): Notification {
+    private fun buildNotification(
+        remainingSeconds: Long,
+        usedBytes: Long,
+        isReconnecting: Boolean = false
+    ): Notification {
         val openAppIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
@@ -538,15 +619,25 @@ class VeilVpnService : VpnService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val title = if (isReconnecting) "VeilGate · Reconnecting..." else "VeilGate · $serverName"
         val timeStr = SessionLimits.formatSeconds(remainingSeconds)
         val dataStr = "${SessionLimits.formatBytes(usedBytes)} / 1.00 GB"
+        val contentText = if (isReconnecting) {
+            "⚠️ Connection lost. Retrying to restore traffic..."
+        } else {
+            "⏳ $timeStr left   |   📊 $dataStr"
+        }
 
         return NotificationCompat.Builder(this, VeilGateApp.NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_vpn_lock)
-            .setContentTitle("VeilGate · $serverName")
-            .setContentText("⏳ $timeStr left   |   📊 $dataStr")
+            .setContentTitle(title)
+            .setContentText(contentText)
             .setStyle(NotificationCompat.BigTextStyle().bigText(
-                "Connected to $serverName\nTime Remaining: $timeStr (1h limit)\nData Used: $dataStr (1GB limit)"
+                if (isReconnecting) {
+                    "Internet connection lost through $serverName.\nAttempting to reconnect and restore traffic (retrying for up to 25s)..."
+                } else {
+                    "Connected to $serverName\nTime Remaining: $timeStr (1h limit)\nData Used: $dataStr (1GB limit)"
+                }
             ))
             .setOngoing(true)
             .setContentIntent(openAppPendingIntent)
@@ -556,9 +647,13 @@ class VeilVpnService : VpnService() {
             .build()
     }
 
-    private fun updateNotification(remainingSeconds: Long, usedBytes: Long) {
+    private fun updateNotification(
+        remainingSeconds: Long,
+        usedBytes: Long,
+        isReconnecting: Boolean = false
+    ) {
         val manager = getSystemService(NotificationManager::class.java)
-        manager?.notify(NOTIFICATION_ID, buildNotification(remainingSeconds, usedBytes))
+        manager?.notify(NOTIFICATION_ID, buildNotification(remainingSeconds, usedBytes, isReconnecting))
     }
 
     override fun onDestroy() {

@@ -192,7 +192,8 @@ fun TopAppBar(status: VpnStatus, onSettingsClick: () -> Unit) {
                     .background(
                         when (status) {
                             VpnStatus.CONNECTED -> NeonGreen
-                            VpnStatus.CONNECTING -> NeonAmber
+                            VpnStatus.CONNECTING, VpnStatus.RECONNECTING -> NeonAmber
+                            VpnStatus.ERROR -> NeonRed
                             else -> TextMuted
                         }
                     )
@@ -292,7 +293,7 @@ fun CentralPowerButton(
     onClick: () -> Unit
 ) {
     val isConnected = status == VpnStatus.CONNECTED
-    val isConnecting = status == VpnStatus.CONNECTING
+    val isConnecting = status == VpnStatus.CONNECTING || status == VpnStatus.RECONNECTING
 
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
     val pulseScale by infiniteTransition.animateFloat(
@@ -307,7 +308,7 @@ fun CentralPowerButton(
 
     val glowColor = when (status) {
         VpnStatus.CONNECTED -> NeonGreen
-        VpnStatus.CONNECTING -> NeonAmber
+        VpnStatus.CONNECTING, VpnStatus.RECONNECTING -> NeonAmber
         VpnStatus.ERROR -> NeonRed
         else -> NeonCyan.copy(alpha = 0.4f)
     }
@@ -373,7 +374,8 @@ fun CentralPowerButton(
 fun StatusTextLabel(status: VpnStatus) {
     val (label, color) = when (status) {
         VpnStatus.CONNECTED -> "CONNECTED · SECURE" to NeonGreen
-        VpnStatus.CONNECTING -> "ESTABLISHING AMNEZIAWG..." to NeonAmber
+        VpnStatus.CONNECTING -> "VERIFYING TRAFFIC..." to NeonAmber
+        VpnStatus.RECONNECTING -> "RECONNECTING · RESTORING..." to NeonAmber
         VpnStatus.DISCONNECTING -> "DISCONNECTING..." to NeonAmber
         VpnStatus.ERROR -> "CONNECTION FAILED" to NeonRed
         VpnStatus.DISCONNECTED -> "DISCONNECTED" to TextSecondary
@@ -395,7 +397,7 @@ fun DualMetricsCard(
     remainingSeconds: Long,
     usedBytes: Long
 ) {
-    val isConnected = status == VpnStatus.CONNECTED
+    val isConnected = status == VpnStatus.CONNECTED || status == VpnStatus.RECONNECTING
     val timeProgress = (remainingSeconds.toFloat() / SessionLimits.DEFAULT_TIME_LIMIT_SECONDS).coerceIn(0f, 1f)
     val quotaProgress = (usedBytes.toFloat() / SessionLimits.DEFAULT_QUOTA_LIMIT_BYTES).coerceIn(0f, 1f)
 

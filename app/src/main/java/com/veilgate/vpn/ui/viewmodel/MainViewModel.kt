@@ -86,7 +86,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun toggleConnection() {
         val currentStatus = _uiState.value.status
-        if (currentStatus == VpnStatus.CONNECTED || currentStatus == VpnStatus.CONNECTING) {
+        if (currentStatus == VpnStatus.CONNECTED || currentStatus == VpnStatus.CONNECTING || currentStatus == VpnStatus.RECONNECTING) {
             disconnect(DisconnectReason.USER_MANUAL)
         } else {
             connect()
