@@ -13,7 +13,8 @@ enum class DisconnectReason {
     TIME_LIMIT_EXCEEDED,   // Reached 1 hour limit
     QUOTA_LIMIT_EXCEEDED,  // Reached 1 GB limit
     SERVER_REVOKED,
-    CONNECTION_FAILED
+    CONNECTION_FAILED,
+    CONNECTION_LOST        // Lost internet reachability or dead handshake
 }
 
 data class VpnUiState(

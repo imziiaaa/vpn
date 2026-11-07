@@ -5,6 +5,10 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.TrafficStats
 import android.net.VpnService
 import android.os.Build
@@ -28,6 +32,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.amnezia.awg.GoBackend
+import java.net.InetSocketAddress
+import java.net.Socket
 
 class VeilVpnService : VpnService() {
 
@@ -130,6 +136,8 @@ class VeilVpnService : VpnService() {
 
     private var currentTunnelHandle: Int = -1
     private var monitorJob: Job? = null
+    private var healthCheckJob: Job? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private val serviceScope = CoroutineScope(Dispatchers.Default)
 
     private var serverName: String = "VeilGate Node"
@@ -219,15 +227,6 @@ class VeilVpnService : VpnService() {
                 }
             }
 
-            // Exclude app's own traffic from loopback VPN tunnel
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                try {
-                    builder.addDisallowedApplication(packageName)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Could not disallow package from VPN", e)
-                }
-            }
-
             val pfd = withContext(Dispatchers.Main) {
                 builder.establish()
             }
@@ -264,8 +263,14 @@ class VeilVpnService : VpnService() {
             Log.i(TAG, "AmneziaWG tunnel established successfully (handle=$handle, sockV4=$sockV4, sockV6=$sockV6)")
             _vpnStatusFlow.value = VpnStatus.CONNECTED
 
-            // Launch active monitoring loop for 1-HOUR and 1-GB limit enforcement
+            // 1. Register physical network monitor (detects cellular/Wi-Fi drops)
+            registerNetworkMonitor()
+
+            // 2. Launch active 1-hour & 1-GB limit monitor
             startLimitEnforcementMonitor()
+
+            // 3. Launch watchdog probe to detect dropped tunnel or loss of internet
+            startHealthCheckMonitor()
 
         } catch (e: Exception) {
             Log.e(TAG, "Exception while starting AmneziaWG tunnel", e)
@@ -335,6 +340,11 @@ class VeilVpnService : VpnService() {
         monitorJob?.cancel()
         monitorJob = null
 
+        healthCheckJob?.cancel()
+        healthCheckJob = null
+
+        unregisterNetworkMonitor()
+
         if (currentTunnelHandle >= 0) {
             try {
                 Log.i(TAG, "Turning off AmneziaWG tunnel (handle=$currentTunnelHandle)")
@@ -348,6 +358,166 @@ class VeilVpnService : VpnService() {
         _vpnStatusFlow.value = VpnStatus.DISCONNECTED
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    /**
+     * Active watchdog running every 5-6 seconds:
+     * 1. Checks if initial handshake was established within 15 seconds.
+     * 2. Tests internet reachability over the tunnel by connecting to anycast DNS (1.1.1.1 / 8.8.8.8) on port 53.
+     * 3. Checks if WireGuard handshake became stale (>120s) with failed probes.
+     * 4. Automatically tears down tunnel with CONNECTION_LOST if 3 consecutive probes fail.
+     */
+    private fun startHealthCheckMonitor() {
+        healthCheckJob?.cancel()
+        healthCheckJob = serviceScope.launch(Dispatchers.IO) {
+            var consecutiveFailures = 0
+            var secondsElapsed = 0
+
+            // Initial grace period to allow tunnel and initial handshake to settle
+            delay(5000L)
+            secondsElapsed += 5
+
+            while (isActive && _vpnStatusFlow.value == VpnStatus.CONNECTED) {
+                val health = getHandshakeHealth()
+
+                // Initial handshake validation (between 15-20s after connect)
+                if (secondsElapsed in 15..22 && health.lastHandshakeSec == 0L) {
+                    Log.e(TAG, "Initial WireGuard handshake was never established after 15s. Aborting tunnel.")
+                    stopTunnel(DisconnectReason.CONNECTION_FAILED)
+                    break
+                }
+
+                // Active probe through the VPN tunnel
+                val reachable = checkInternetReachability()
+                if (reachable) {
+                    if (consecutiveFailures > 0) {
+                        Log.i(TAG, "Internet connectivity restored via tunnel (was $consecutiveFailures failure(s))")
+                    }
+                    consecutiveFailures = 0
+                } else {
+                    consecutiveFailures++
+                    Log.w(TAG, "Internet probe through tunnel failed ($consecutiveFailures/3 consecutive failures)")
+
+                    if (consecutiveFailures >= 3) {
+                        Log.e(TAG, "Lost internet reachability through VPN tunnel (3 consecutive failed probes). Disconnecting.")
+                        stopTunnel(DisconnectReason.CONNECTION_LOST)
+                        break
+                    }
+                }
+
+                // Stale handshake check: if handshake is >120s old and probe failed, peer is dead
+                if (health.ageSec > 120 && consecutiveFailures >= 2) {
+                    Log.e(TAG, "WireGuard handshake expired (${health.ageSec}s old) and internet unreachable. Disconnecting.")
+                    stopTunnel(DisconnectReason.CONNECTION_LOST)
+                    break
+                }
+
+                delay(6000L)
+                secondsElapsed += 6
+            }
+        }
+    }
+
+    /**
+     * Probes external internet access through the VPN tunnel without requiring DNS resolution.
+     */
+    private suspend fun checkInternetReachability(): Boolean = withContext(Dispatchers.IO) {
+        var socket: Socket? = null
+        try {
+            socket = Socket()
+            // Direct IP connect to Cloudflare DNS port 53 (TCP) with 2500ms timeout
+            socket.connect(InetSocketAddress("1.1.1.1", 53), 2500)
+            true
+        } catch (e: Exception) {
+            // Fallback to Google DNS port 53 (TCP)
+            var fallbackSocket: Socket? = null
+            try {
+                fallbackSocket = Socket()
+                fallbackSocket.connect(InetSocketAddress("8.8.8.8", 53), 2500)
+                true
+            } catch (e2: Exception) {
+                false
+            } finally {
+                runCatching { fallbackSocket?.close() }
+            }
+        } finally {
+            runCatching { socket?.close() }
+        }
+    }
+
+    private data class HandshakeHealth(
+        val lastHandshakeSec: Long,
+        val ageSec: Long,
+        val rxBytes: Long,
+        val txBytes: Long
+    )
+
+    private fun getHandshakeHealth(): HandshakeHealth {
+        val handle = currentTunnelHandle
+        if (handle < 0) return HandshakeHealth(0L, -1L, 0L, 0L)
+        val config = try {
+            GoBackend.awgGetConfig(handle)
+        } catch (e: Exception) {
+            null
+        } ?: return HandshakeHealth(0L, -1L, 0L, 0L)
+
+        var lastHandshakeSec = 0L
+        var rxBytes = 0L
+        var txBytes = 0L
+
+        for (line in config.lineSequence()) {
+            val trimmed = line.trim()
+            if (trimmed.startsWith("last_handshake_time_sec=")) {
+                lastHandshakeSec = trimmed.substringAfter("=").trim().toLongOrNull() ?: 0L
+            } else if (trimmed.startsWith("rx_bytes=")) {
+                rxBytes = trimmed.substringAfter("=").trim().toLongOrNull() ?: 0L
+            } else if (trimmed.startsWith("tx_bytes=")) {
+                txBytes = trimmed.substringAfter("=").trim().toLongOrNull() ?: 0L
+            }
+        }
+
+        val nowSec = System.currentTimeMillis() / 1000L
+        val ageSec = if (lastHandshakeSec > 0) (nowSec - lastHandshakeSec).coerceAtLeast(0) else -1L
+        return HandshakeHealth(lastHandshakeSec, ageSec, rxBytes, txBytes)
+    }
+
+    private fun registerNetworkMonitor() {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
+
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onLost(network: Network) {
+                Log.w(TAG, "Device underlying physical network lost.")
+                serviceScope.launch {
+                    delay(4000L)
+                    val active = cm.activeNetwork
+                    if (active == null && _vpnStatusFlow.value == VpnStatus.CONNECTED) {
+                        Log.e(TAG, "No active physical network after grace period. Auto-disconnecting.")
+                        stopTunnel(DisconnectReason.CONNECTION_LOST)
+                    }
+                }
+            }
+        }
+        networkCallback = callback
+        try {
+            cm.registerNetworkCallback(request, callback)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to register network callback", e)
+        }
+    }
+
+    private fun unregisterNetworkMonitor() {
+        networkCallback?.let { cb ->
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            try {
+                cm?.unregisterNetworkCallback(cb)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to unregister network callback", e)
+            }
+            networkCallback = null
+        }
     }
 
     private fun buildNotification(remainingSeconds: Long, usedBytes: Long): Notification {

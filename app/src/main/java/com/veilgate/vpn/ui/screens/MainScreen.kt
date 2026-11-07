@@ -221,7 +221,10 @@ fun TopAppBar(status: VpnStatus, onSettingsClick: () -> Unit) {
 @Composable
 fun LimitNoticeBanner(lastReason: DisconnectReason?) {
     AnimatedVisibility(
-        visible = lastReason == DisconnectReason.TIME_LIMIT_EXCEEDED || lastReason == DisconnectReason.QUOTA_LIMIT_EXCEEDED,
+        visible = lastReason == DisconnectReason.TIME_LIMIT_EXCEEDED ||
+                lastReason == DisconnectReason.QUOTA_LIMIT_EXCEEDED ||
+                lastReason == DisconnectReason.CONNECTION_LOST ||
+                lastReason == DisconnectReason.CONNECTION_FAILED,
         enter = fadeIn(),
         exit = fadeOut()
     ) {
@@ -235,6 +238,16 @@ fun LimitNoticeBanner(lastReason: DisconnectReason?) {
                 "1-GB Data Quota Reached",
                 "You reached your 1,024 MB data allocation. Tap Connect to renew.",
                 NeonAmber
+            )
+            DisconnectReason.CONNECTION_LOST -> Triple(
+                "Connection Lost",
+                "Internet access was lost or server stopped responding. Connection disconnected automatically.",
+                NeonRed
+            )
+            DisconnectReason.CONNECTION_FAILED -> Triple(
+                "Connection Failed",
+                "Could not establish handshake with server. Please try another node.",
+                NeonRed
             )
             else -> Triple("", "", NeonAmber)
         }
