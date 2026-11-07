@@ -298,79 +298,98 @@ class VeilVpnService : VpnService() {
 
     /**
      * Pre-connection verification:
-     * 1. Confirms WireGuard handshake completed (last_handshake_time_sec > 0).
-     * 2. Sends actual HTTP/TCP traffic (upload) and reads response bytes (download).
-     * 3. Confirms rx_bytes increased in the native engine.
-     * Only returns true when genuine data flow is verified.
+     * Retries up to 3 times to establish a WireGuard handshake and confirm bidirectional traffic.
+     * Only tears down if all 3 attempts fail.
      */
     private suspend fun verifyTrafficFlow(handle: Int): Boolean = withContext(Dispatchers.IO) {
-        Log.i(TAG, "Verifying traffic flow: Waiting for initial handshake...")
-        val startWait = System.currentTimeMillis()
-        var handshakeOk = false
-
-        while (System.currentTimeMillis() - startWait < 8000L && isActive) {
-            val health = getHandshakeHealth()
-            if (health.lastHandshakeSec > 0L) {
-                handshakeOk = true
-                Log.i(TAG, "WireGuard handshake established in ${System.currentTimeMillis() - startWait}ms")
-                break
-            }
-            delay(500L)
-        }
-
-        if (!handshakeOk) {
-            Log.e(TAG, "Pre-connection verification failed: No handshake received from server within 8s.")
-            return@withContext false
-        }
-
-        Log.i(TAG, "Handshake confirmed. Now testing bidirectional data transfer (upload/download)...")
-        val rxBefore = getHandshakeHealth().rxBytes
-        var dataExchangeOk = false
-
         for (attempt in 1..3) {
-            if (!isActive || dataExchangeOk) break
-            var socket: Socket? = null
-            try {
-                socket = Socket()
-                socket.soTimeout = 3000
-                socket.connect(InetSocketAddress("1.1.1.1", 80), 3000)
-                val out = socket.getOutputStream()
-                // Send lightweight HTTP GET (Upload verification)
-                val req = "GET /generate_204 HTTP/1.1\r\nHost: 1.1.1.1\r\nConnection: close\r\n\r\n"
-                out.write(req.toByteArray(Charsets.US_ASCII))
-                out.flush()
+            if (!isActive) return@withContext false
+            Log.i(TAG, "Starting pre-connect verification attempt $attempt of 3...")
 
-                // Read HTTP response header (Download verification)
-                val reader = socket.getInputStream().bufferedReader()
-                val firstLine = reader.readLine()
-                if (firstLine != null && firstLine.startsWith("HTTP/")) {
-                    dataExchangeOk = true
-                    Log.i(TAG, "Data transfer confirmed on attempt $attempt (response: $firstLine)")
+            // Proactively send a packet to nudge WireGuard to initiate/re-send handshake
+            try {
+                Socket().use { s ->
+                    s.soTimeout = 1000
+                    s.connect(InetSocketAddress("1.1.1.1", 53), 1000)
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "Data transfer attempt $attempt failed: ${e.message}")
-                // Fallback attempt: TCP connect to Cloudflare DNS port 53
-                var fallbackSocket: Socket? = null
-                try {
-                    fallbackSocket = Socket()
-                    fallbackSocket.connect(InetSocketAddress("1.1.1.1", 53), 2500)
-                    dataExchangeOk = true
-                    Log.i(TAG, "TCP port 53 data transfer confirmed on attempt $attempt")
-                } catch (e2: Exception) {
-                    delay(1000L)
-                } finally {
-                    runCatching { fallbackSocket?.close() }
+            } catch (_: Exception) {}
+
+            var handshakeOk = false
+            val startWait = System.currentTimeMillis()
+            while (System.currentTimeMillis() - startWait < 8000L && isActive) {
+                val health = getHandshakeHealth()
+                if (health.lastHandshakeSec > 0L) {
+                    handshakeOk = true
+                    Log.i(TAG, "WireGuard handshake established in ${System.currentTimeMillis() - startWait}ms on attempt $attempt")
+                    break
                 }
-            } finally {
-                runCatching { socket?.close() }
+                delay(500L)
             }
-            if (dataExchangeOk) break
+
+            if (!handshakeOk) {
+                Log.w(TAG, "Pre-connection attempt $attempt/3: No handshake received within 8s.")
+                if (attempt < 3) {
+                    Log.i(TAG, "Automatically retrying handshake (attempt ${attempt + 1}/3)...")
+                    delay(1000L)
+                    continue
+                } else {
+                    Log.e(TAG, "All 3 pre-connection handshake attempts failed.")
+                    return@withContext false
+                }
+            }
+
+            // Handshake confirmed; verify bidirectional data transfer (upload/download)
+            Log.i(TAG, "Handshake confirmed on attempt $attempt. Testing data transfer...")
+            val rxBefore = getHandshakeHealth().rxBytes
+            var dataExchangeOk = false
+
+            for (probeAttempt in 1..2) {
+                if (!isActive || dataExchangeOk) break
+                var socket: Socket? = null
+                try {
+                    socket = Socket()
+                    socket.soTimeout = 3000
+                    socket.connect(InetSocketAddress("1.1.1.1", 80), 3000)
+                    val out = socket.getOutputStream()
+                    val req = "GET /generate_204 HTTP/1.1\r\nHost: 1.1.1.1\r\nConnection: close\r\n\r\n"
+                    out.write(req.toByteArray(Charsets.US_ASCII))
+                    out.flush()
+
+                    val reader = socket.getInputStream().bufferedReader()
+                    val firstLine = reader.readLine()
+                    if (firstLine != null && firstLine.startsWith("HTTP/")) {
+                        dataExchangeOk = true
+                        Log.i(TAG, "Data transfer confirmed on probe $probeAttempt (response: $firstLine)")
+                    }
+                } catch (e: Exception) {
+                    var fallbackSocket: Socket? = null
+                    try {
+                        fallbackSocket = Socket()
+                        fallbackSocket.connect(InetSocketAddress("1.1.1.1", 53), 2500)
+                        dataExchangeOk = true
+                        Log.i(TAG, "TCP port 53 data transfer confirmed on probe $probeAttempt")
+                    } catch (_: Exception) {
+                    } finally {
+                        runCatching { fallbackSocket?.close() }
+                    }
+                } finally {
+                    runCatching { socket?.close() }
+                }
+            }
+
+            val rxAfter = getHandshakeHealth().rxBytes
+            if (dataExchangeOk || rxAfter > rxBefore) {
+                Log.i(TAG, "Pre-connection traffic verified successfully on attempt $attempt (rxBefore=$rxBefore, rxAfter=$rxAfter)")
+                return@withContext true
+            }
+
+            Log.w(TAG, "Bidirectional data check failed on attempt $attempt/3.")
+            if (attempt < 3) {
+                delay(1000L)
+            }
         }
 
-        val rxAfter = getHandshakeHealth().rxBytes
-        Log.i(TAG, "Traffic verification complete: dataOk=$dataExchangeOk, rxBefore=$rxBefore, rxAfter=$rxAfter")
-
-        dataExchangeOk || (rxAfter > rxBefore)
+        false
     }
 
     /**
