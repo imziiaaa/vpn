@@ -86,7 +86,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun toggleConnection() {
         val currentStatus = _uiState.value.status
-        if (currentStatus == VpnStatus.CONNECTED || currentStatus == VpnStatus.CONNECTING || currentStatus == VpnStatus.RECONNECTING) {
+        if (currentStatus == VpnStatus.CONNECTED || currentStatus == VpnStatus.CONNECTING || currentStatus == VpnStatus.RECONNECTING || currentStatus == VpnStatus.DISCONNECTING) {
             disconnect(DisconnectReason.USER_MANUAL)
         } else {
             connect()
@@ -133,7 +133,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // Launch the foreground VPN service with AmneziaWG engine & limits active
                 VeilVpnService.startService(
                     context = getApplication(),
-                    serverName = session.nodeName.ifEmpty { targetServer?.name ?: "VeilGate Node" },
+                    serverName = session.nodeName.ifEmpty { targetServer?.name ?: "Raven Node" },
                     location = session.location.ifEmpty { targetServer?.location ?: "Auto" },
                     iface = iface,
                     peer = peer
@@ -151,9 +151,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun disconnect(reason: DisconnectReason = DisconnectReason.USER_MANUAL) {
         viewModelScope.launch {
+            _uiState.update { it.copy(status = VpnStatus.DISCONNECTING) }
             val serverId = _uiState.value.selectedServer?.id
             VeilVpnService.stopService(getApplication(), reason)
-            repository.notifyDisconnect(serverId)
+            try {
+                repository.notifyDisconnect(serverId)
+            } catch (e: Exception) {
+                // Ignore API failure on disconnect
+            }
+            _uiState.update { it.copy(status = VpnStatus.DISCONNECTED) }
         }
     }
 

@@ -81,10 +81,9 @@ fun MainScreen(
     val snackbarHostState = remember { SnackbarHostState() }
 
     var showServerPicker by remember { mutableStateOf(false) }
-    var previewConnectedState by remember { mutableStateOf<Boolean?>(null) }
 
-    val isConnected = previewConnectedState ?: (uiState.status == VpnStatus.CONNECTED)
-    val isConnecting = if (previewConnectedState != null) false else (uiState.status == VpnStatus.CONNECTING || uiState.status == VpnStatus.RECONNECTING)
+    val isConnected = (uiState.status == VpnStatus.CONNECTED)
+    val isConnecting = (uiState.status == VpnStatus.CONNECTING || uiState.status == VpnStatus.RECONNECTING || uiState.status == VpnStatus.DISCONNECTING)
 
     LaunchedEffect(uiState.errorMessage) {
         uiState.errorMessage?.let { msg ->
@@ -120,10 +119,7 @@ fun MainScreen(
                     CadTopHeader(
                         status = uiState.status,
                         isConnected = isConnected,
-                        isConnecting = isConnecting,
-                        onBadgeClick = {
-                            previewConnectedState = if (previewConnectedState == true) false else true
-                        }
+                        isConnecting = isConnecting
                     )
 
                     Spacer(modifier = Modifier.height(14.dp))
@@ -186,12 +182,12 @@ fun MainScreen(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     CadTapActionControl(
+                        status = uiState.status,
                         isConnected = isConnected,
                         isConnecting = isConnecting,
                         onTrigger = {
-                            Log.i("MainScreen", "onTrigger called! isConnected=$isConnected, isConnecting=$isConnecting")
                             if (isConnected || isConnecting) {
-                                viewModel.toggleConnection()
+                                viewModel.disconnect()
                             } else {
                                 onRequestVpnPermission()
                             }
@@ -293,8 +289,7 @@ private fun CadBackgroundGrid() {
 private fun CadTopHeader(
     status: VpnStatus,
     isConnected: Boolean,
-    isConnecting: Boolean,
-    onBadgeClick: () -> Unit = {}
+    isConnecting: Boolean
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -330,6 +325,7 @@ private fun CadTopHeader(
 
             val refText = when {
                 isConnected -> "REF: 50.1109° N | SYS.LOCKED +"
+                status == VpnStatus.DISCONNECTING -> "REF: 50.1109° N | SYS.DISENGAGING..."
                 isConnecting -> "REF: 50.1109° N | SYS.ENGAGING..."
                 else -> "REF: 50.1109° N | SYS.UNLOCKED"
             }
@@ -349,12 +345,12 @@ private fun CadTopHeader(
             modifier = Modifier
                 .border(1.2.dp, badgeBorderColor, RoundedCornerShape(16.dp))
                 .background(badgeBgColor, RoundedCornerShape(16.dp))
-                .clickable(onClick = onBadgeClick)
                 .padding(horizontal = 10.dp, vertical = 5.dp),
             contentAlignment = Alignment.Center
         ) {
             val statusString = when {
                 isConnected -> "● LOCKED // 100%"
+                status == VpnStatus.DISCONNECTING -> "○ CLOSING // 20%"
                 isConnecting -> "◌ ENGAGING // 50%"
                 else -> "○ UNSECURED // 0%"
             }
@@ -793,8 +789,11 @@ private fun CadHeadlineStatus(
                 }
             }
             isConnecting -> {
+                val isDisconnecting = (status == VpnStatus.DISCONNECTING)
+                val headlineText = if (isDisconnecting) "Disengaging..." else "Engaging shield..."
+                val subText = if (isDisconnecting) "TEARING DOWN TUNNEL • RESTORING DEFAULT ROUTE" else "CRYPTOGRAPHIC KEY EXCHANGE IN PROGRESS"
                 Text(
-                    text = "Engaging shield...",
+                    text = headlineText,
                     fontFamily = FontFamily.SansSerif,
                     fontWeight = FontWeight.Bold,
                     fontSize = 30.sp,
@@ -810,7 +809,7 @@ private fun CadHeadlineStatus(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "CRYPTOGRAPHIC KEY EXCHANGE IN PROGRESS",
+                        text = subText,
                         fontFamily = FontFamily.Monospace,
                         fontWeight = FontWeight.Bold,
                         fontSize = 10.5.sp,
@@ -856,10 +855,12 @@ private fun CadHeadlineStatus(
  */
 @Composable
 private fun CadTapActionControl(
+    status: VpnStatus,
     isConnected: Boolean,
     isConnecting: Boolean,
     onTrigger: () -> Unit
 ) {
+    val isDisconnecting = (status == VpnStatus.DISCONNECTING)
     val buttonShape = if (isConnected) RoundedCornerShape(8.dp) else RoundedCornerShape(28.dp)
     val buttonBg = if (isConnected) CadRedBg.copy(alpha = 0.85f) else CadRed
     val borderColor = if (isConnected) CadRed else Color.Transparent
@@ -874,7 +875,27 @@ private fun CadTapActionControl(
             .clickable(onClick = onTrigger),
         contentAlignment = Alignment.Center
     ) {
-        if (isConnecting) {
+        if (isDisconnecting) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                    color = CadRed
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = "DISENGAGING TUNNEL...",
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    color = CadRed,
+                    letterSpacing = 0.5.sp
+                )
+            }
+        } else if (isConnecting) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.Center
