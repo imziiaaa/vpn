@@ -55,11 +55,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun prepareVpnAndConnect() {
+        android.util.Log.i("MainActivity", "prepareVpnAndConnect called!")
         val intent = VpnService.prepare(this)
         if (intent != null) {
+            android.util.Log.i("MainActivity", "Launching vpnPermissionLauncher...")
             vpnPermissionLauncher.launch(intent)
         } else {
-            // Already prepared, proceed directly to connection
+            android.util.Log.i("MainActivity", "VPN already prepared, toggling connection...")
             viewModel.toggleConnection()
         }
     }
