@@ -394,15 +394,12 @@ class VeilVpnService : VpnService() {
     }
 
     /**
-     * Active coroutine loop running every 1 second:
-     * 1. Decrements the 1-hour session timer.
-     * 2. Calculates monotonic data transferred (rx + tx) against the 1-GB limit.
-     * 3. Disconnects immediately if either limit is breached.
+     * Active coroutine loop running while connected:
+     * Continuously measures monotonic data transferred without imposing arbitrary time or quota cutoffs.
      */
     private fun startLimitEnforcementMonitor() {
         monitorJob?.cancel()
         monitorJob = serviceScope.launch {
-            var secondsLeft = SessionLimits.DEFAULT_TIME_LIMIT_SECONDS
             val myUid = android.os.Process.myUid()
 
             var lastRx = TrafficStats.getUidRxBytes(myUid).takeIf { it != TrafficStats.UNSUPPORTED.toLong() } ?: 0L
@@ -411,17 +408,7 @@ class VeilVpnService : VpnService() {
 
             while (isActive && (_vpnStatusFlow.value == VpnStatus.CONNECTED || _vpnStatusFlow.value == VpnStatus.RECONNECTING)) {
                 delay(1000L)
-                secondsLeft -= 1
-                _remainingSecondsFlow.value = secondsLeft.coerceAtLeast(0)
 
-                // 1. Check TIME LIMIT (1 Hour = 3600s)
-                if (secondsLeft <= 0) {
-                    Log.i(TAG, "Session expired: 1-hour time limit reached.")
-                    stopTunnel(DisconnectReason.TIME_LIMIT_EXCEEDED)
-                    break
-                }
-
-                // 2. Check DATA QUOTA LIMIT (1 GB = 1,073,741,824 bytes) using monotonic deltas
                 val curRx = TrafficStats.getUidRxBytes(myUid).takeIf { it != TrafficStats.UNSUPPORTED.toLong() } ?: lastRx
                 val curTx = TrafficStats.getUidTxBytes(myUid).takeIf { it != TrafficStats.UNSUPPORTED.toLong() } ?: lastTx
 
@@ -436,14 +423,8 @@ class VeilVpnService : VpnService() {
 
                 _usedBytesFlow.value = accumulatedBytes
 
-                if (accumulatedBytes >= SessionLimits.DEFAULT_QUOTA_LIMIT_BYTES) {
-                    Log.i(TAG, "Session expired: 1-GB data quota reached ($accumulatedBytes bytes).")
-                    stopTunnel(DisconnectReason.QUOTA_LIMIT_EXCEEDED)
-                    break
-                }
-
                 // Update ongoing status notification
-                updateNotification(secondsLeft, accumulatedBytes, isReconnecting = (_vpnStatusFlow.value == VpnStatus.RECONNECTING))
+                updateNotification(0L, accumulatedBytes, _vpnStatusFlow.value == VpnStatus.RECONNECTING)
             }
         }
     }
@@ -648,12 +629,10 @@ class VeilVpnService : VpnService() {
         )
 
         val title = if (isReconnecting) "Raven VPN · Reconnecting..." else "Raven VPN · $serverName"
-        val timeStr = SessionLimits.formatSeconds(remainingSeconds)
-        val dataStr = "${SessionLimits.formatBytes(usedBytes)} / 1.00 GB"
         val contentText = if (isReconnecting) {
             "⚠️ Connection lost. Retrying to restore traffic..."
         } else {
-            "⏳ $timeStr left   |   📊 $dataStr"
+            "Protected · Shield Active"
         }
 
         return NotificationCompat.Builder(this, VeilGateApp.NOTIFICATION_CHANNEL_ID)
@@ -664,7 +643,7 @@ class VeilVpnService : VpnService() {
                 if (isReconnecting) {
                     "Internet connection lost through $serverName.\nAttempting to reconnect and restore traffic (retrying for up to 25s)..."
                 } else {
-                    "Connected to $serverName\nTime Remaining: $timeStr (1h limit)\nData Used: $dataStr (1GB limit)"
+                    "Connected to $serverName\nWireGuard Obfuscated Tunnel Active"
                 }
             ))
             .setOngoing(true)
