@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Hub
@@ -997,7 +998,7 @@ private fun CadSlideToActControl(
             ) {
                 val actionLabel = when {
                     isConnecting -> "ENGAGING TUNNEL..."
-                    isConnected -> "SLIDE TO DISCONNECT"
+                    isConnected -> "<<< SLIDE TO DISCONNECT"
                     else -> "SLIDE TO PROTECT >>>"
                 }
                 Text(
@@ -1009,20 +1010,29 @@ private fun CadSlideToActControl(
                 )
             }
 
-            // Draggable Coral-Red Knob
+            // Draggable Coral-Red Knob (Left-to-Right for Connect, Right-to-Left for Disconnect)
             val maxDrag = (trackWidthPx - knobSizePx - with(density) { 8.dp.toPx() }).coerceAtLeast(0f)
             val knobShape = if (isConnected) RoundedCornerShape(6.dp) else CircleShape
 
+            // Compute current knob X position:
+            // When disconnected: starts on the left (0) and moves right (+dragOffsetPx)
+            // When connected: starts on the right (maxDrag) and moves left (-dragOffsetPx)
+            val currentKnobXPx = if (isConnected) {
+                (maxDrag - animatedOffsetPx) + with(density) { 4.dp.toPx() }
+            } else {
+                animatedOffsetPx + with(density) { 4.dp.toPx() }
+            }
+
             Box(
                 modifier = Modifier
-                    .offset { IntOffset(animatedOffsetPx.roundToInt() + with(density) { 4.dp.roundToPx() }, 0) }
+                    .offset { IntOffset(currentKnobXPx.roundToInt(), 0) }
                     .size(knobSizeDp)
                     .clip(knobShape)
                     .background(CadRed)
                     .pointerInput(isConnected, maxDrag) {
                         detectHorizontalDragGestures(
                             onDragEnd = {
-                                Log.i("MainScreen", "onDragEnd: dragOffsetPx=$dragOffsetPx, maxDrag=$maxDrag")
+                                Log.i("MainScreen", "onDragEnd: dragOffsetPx=$dragOffsetPx, maxDrag=$maxDrag, isConnected=$isConnected")
                                 if (maxDrag > 0f && dragOffsetPx >= maxDrag * 0.35f) {
                                     onTrigger()
                                 }
@@ -1032,7 +1042,13 @@ private fun CadSlideToActControl(
                                 dragOffsetPx = 0f
                             },
                             onHorizontalDrag = { _, dragAmount ->
-                                dragOffsetPx = (dragOffsetPx + dragAmount).coerceIn(0f, maxDrag)
+                                if (isConnected) {
+                                    // Moving left (negative dragAmount) increases disconnect drag progress
+                                    dragOffsetPx = (dragOffsetPx - dragAmount).coerceIn(0f, maxDrag)
+                                } else {
+                                    // Moving right (positive dragAmount) increases connect drag progress
+                                    dragOffsetPx = (dragOffsetPx + dragAmount).coerceIn(0f, maxDrag)
+                                }
                             }
                         )
                     }
@@ -1050,8 +1066,8 @@ private fun CadSlideToActControl(
                     )
                 } else {
                     Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                        contentDescription = "Trigger",
+                        imageVector = if (isConnected) Icons.AutoMirrored.Filled.ArrowBack else Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = if (isConnected) "Slide to Disconnect" else "Slide to Protect",
                         tint = Color.White,
                         modifier = Modifier.size(20.dp)
                     )
