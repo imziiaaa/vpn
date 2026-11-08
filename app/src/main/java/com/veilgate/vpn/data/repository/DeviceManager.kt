@@ -54,4 +54,12 @@ class DeviceManager(context: Context) {
     fun setLastServerId(serverId: String) {
         prefs.edit().putString(KEY_LAST_SERVER_ID, serverId).apply()
     }
+
+    fun getCachedServersJson(): String? {
+        return prefs.getString("cached_servers_json", null)
+    }
+
+    fun setCachedServersJson(json: String) {
+        prefs.edit().putString("cached_servers_json", json).apply()
+    }
 }
