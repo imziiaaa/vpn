@@ -8,7 +8,7 @@ A stealth, frictionless Native Android VPN client built with **Kotlin** and **Je
 
 1. **Zero-Auth / Frictionless User Experience**:
    - No login, password, or registration required.
-   - Automatically generates and securely persists an anonymous, hardware-based `deviceId` (UUID) in local storage.
+   - Automatically generates and securely persists a pseudonymous, app-generated `deviceId` (UUID) in local storage.
 
 2. **Strict Dual-Limit Session Enforcement**:
    - **1-Hour Time Limit**: Enforces an active countdown timer (3,600 seconds). Automatically tears down the tunnel and notifies the user when the hour expires.

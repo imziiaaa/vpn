@@ -21,7 +21,7 @@ object NetworkClient {
         get() = BuildConfig.DEFAULT_BASE_URL
 
     /**
-     * Resilient DNS resolver with fallback for censored, throttled,
+     * Resilient DNS resolver with fallback for transiently unresolvable
      * or misconfigured host/emulator DNS environments.
      */
     private val resilientDns = object : Dns {

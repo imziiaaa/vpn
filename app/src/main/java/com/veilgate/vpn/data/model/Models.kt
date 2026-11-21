@@ -59,10 +59,10 @@ data class AwgInterfaceConfig(
     val jmax: Int = 70,
     val s1: Int = 0,
     val s2: Int = 0,
-    val h1: Int = 0,
-    val h2: Int = 0,
-    val h3: Int = 0,
-    val h4: Int = 0
+    val h1: Long = 0L,
+    val h2: Long = 0L,
+    val h3: Long = 0L,
+    val h4: Long = 0L
 )
 
 data class AwgPeerConfig(

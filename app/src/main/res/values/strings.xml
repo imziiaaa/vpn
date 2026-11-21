@@ -8,4 +8,16 @@
     <string name="time_left">Time Remaining</string>
     <string name="data_left">Data Limit</string>
     <string name="server_select">Select Node</string>
+
+    <!-- Prominent Disclosure & Consent (Google Play VpnService & User Data Policy) -->
+    <string name="vpn_disclosure_title">VPN Service &amp; Privacy Notice</string>
+    <string name="vpn_disclosure_summary">Raven VPN uses Android\'s VpnService to create a secure, encrypted network tunnel between your device and our VPN nodes.</string>
+    <string name="vpn_disclosure_purpose_title">Why is VpnService required?</string>
+    <string name="vpn_disclosure_purpose_text">Android\'s VpnService is the core system API that enables Raven VPN to establish an encrypted tunnel. This protects your network packets from interception when connecting through public Wi-Fi or untrusted networks.</string>
+    <string name="vpn_disclosure_data_title">What data is routed, collected, and transmitted?</string>
+    <string name="vpn_disclosure_data_text">1. Device Traffic: All outgoing and incoming internet traffic is routed through the encrypted tunnel to the selected VPN node.\n2. Connection Metadata: To provision your session and manage server capacity, the app transmits an app-generated installation ID, device model name, and selected server node ID to our control plane.\n3. Content Privacy: The Raven VPN client application does not monitor, inspect, or store your browsing content, DNS destinations, or visited websites.</string>
+    <string name="vpn_disclosure_agree">Agree &amp; Continue</string>
+    <string name="vpn_disclosure_decline">Cancel</string>
+    <string name="privacy_policy">Privacy Policy</string>
+    <string name="privacy_policy_url">https://veilgate.org/privacy</string>
 </resources>

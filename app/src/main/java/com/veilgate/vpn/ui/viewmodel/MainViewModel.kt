@@ -172,4 +172,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         deviceManager.setAppKey(appKey)
         refreshServers()
     }
+
+    fun isVpnDisclosureAccepted(): Boolean {
+        return deviceManager.isVpnDisclosureAccepted()
+    }
+
+    fun setVpnDisclosureAccepted(accepted: Boolean) {
+        deviceManager.setVpnDisclosureAccepted(accepted)
+    }
 }

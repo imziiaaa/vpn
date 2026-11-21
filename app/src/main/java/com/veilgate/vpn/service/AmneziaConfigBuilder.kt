@@ -21,11 +21,55 @@ object AmneziaConfigBuilder {
     }
 
     /**
+     * Bracket-aware parser for IPv4 ("1.2.3.4:51820", "host:51820")
+     * and IPv6 ("[2001:db8::1]:51820", "2001:db8::1") endpoints.
+     */
+    fun parseHostAndPort(endpoint: String): Pair<String, Int> {
+        val trimmed = endpoint.trim()
+        if (trimmed.startsWith("[")) {
+            val closingBracket = trimmed.indexOf(']')
+            if (closingBracket != -1) {
+                val host = trimmed.substring(1, closingBracket)
+                val after = trimmed.substring(closingBracket + 1)
+                val port = if (after.startsWith(":")) after.substring(1).toIntOrNull() ?: 51820 else 51820
+                return Pair(host, port)
+            }
+        }
+        val lastColon = trimmed.lastIndexOf(':')
+        return if (lastColon != -1 && trimmed.indexOf(':') == lastColon) {
+            val host = trimmed.substring(0, lastColon)
+            val port = trimmed.substring(lastColon + 1).toIntOrNull() ?: 51820
+            Pair(host, port)
+        } else {
+            Pair(trimmed, 51820)
+        }
+    }
+
+    /**
+     * Resolves an endpoint host to a numeric IP while on the physical network.
+     * Emits standard bracketed format for IPv6: "[2001:db8::1]:port", or "1.2.3.4:port" for IPv4.
+     */
+    fun resolveEndpoint(endpoint: String): String {
+        val (host, port) = parseHostAndPort(endpoint)
+        val resolvedIp = try {
+            InetAddress.getByName(host).hostAddress ?: host
+        } catch (e: Exception) {
+            host
+        }
+        return if (resolvedIp.contains(":")) {
+            "[$resolvedIp]:$port"
+        } else {
+            "$resolvedIp:$port"
+        }
+    }
+
+    /**
      * Constructs the UAPI configuration string parsed by libwg-go.so (awgTurnOn).
      */
     fun buildUapiConfig(
         iface: AwgInterfaceConfig,
-        peer: AwgPeerConfig
+        peer: AwgPeerConfig,
+        preResolvedEndpoint: String? = null
     ): String {
         val sb = StringBuilder()
 
@@ -51,17 +95,9 @@ object AmneziaConfigBuilder {
         val publicKeyHex = base64ToHex(peer.publicKey)
         sb.append("public_key=").append(publicKeyHex).append('\n')
 
-        // 5. Resolved endpoint IP:port
-        val endpointParts = peer.endpoint.split(":")
-        val host = endpointParts[0].trim()
-        val port = endpointParts.getOrNull(1)?.trim() ?: "51820"
-
-        val resolvedIp = try {
-            InetAddress.getByName(host).hostAddress ?: host
-        } catch (e: Exception) {
-            host
-        }
-        sb.append("endpoint=").append(resolvedIp).append(':').append(port).append('\n')
+        // 5. Resolved endpoint IP:port (bracket-aware)
+        val finalEndpoint = preResolvedEndpoint ?: resolveEndpoint(peer.endpoint)
+        sb.append("endpoint=").append(finalEndpoint).append('\n')
 
         // 6. Allowed IPs
         peer.allowedIps.split(",").forEach { cidr ->

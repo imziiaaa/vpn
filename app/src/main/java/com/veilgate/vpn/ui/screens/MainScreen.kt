@@ -349,10 +349,10 @@ private fun CadTopHeader(
             contentAlignment = Alignment.Center
         ) {
             val statusString = when {
-                isConnected -> "● LOCKED // 100%"
-                status == VpnStatus.DISCONNECTING -> "○ CLOSING // 20%"
-                isConnecting -> "◌ ENGAGING // 50%"
-                else -> "○ UNSECURED // 0%"
+                isConnected -> "● ENCRYPTED"
+                status == VpnStatus.DISCONNECTING -> "○ DISCONNECTING"
+                isConnecting -> "◌ CONNECTING"
+                else -> "○ DISCONNECTED"
             }
             Text(
                 text = statusString,
@@ -764,7 +764,7 @@ private fun CadHeadlineStatus(
         when {
             isConnected -> {
                 Text(
-                    text = "You are invisible",
+                    text = "Traffic Encrypted",
                     fontFamily = FontFamily.SansSerif,
                     fontWeight = FontWeight.Bold,
                     fontSize = 32.sp,
@@ -780,7 +780,7 @@ private fun CadHeadlineStatus(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "LOCKDOWN TUNNEL ENGAGED • ZERO TELEMETRY",
+                        text = "ENCRYPTED TUNNEL ACTIVE • SECURE ROUTE",
                         fontFamily = FontFamily.Monospace,
                         fontWeight = FontWeight.Bold,
                         fontSize = 10.5.sp,
@@ -790,7 +790,7 @@ private fun CadHeadlineStatus(
             }
             isConnecting -> {
                 val isDisconnecting = (status == VpnStatus.DISCONNECTING)
-                val headlineText = if (isDisconnecting) "Disengaging..." else "Engaging shield..."
+                val headlineText = if (isDisconnecting) "Disengaging..." else "Connecting tunnel..."
                 val subText = if (isDisconnecting) "TEARING DOWN TUNNEL • RESTORING DEFAULT ROUTE" else "CRYPTOGRAPHIC KEY EXCHANGE IN PROGRESS"
                 Text(
                     text = headlineText,
@@ -819,7 +819,7 @@ private fun CadHeadlineStatus(
             }
             else -> {
                 Text(
-                    text = "YOU ARE VULNERABLE",
+                    text = "SHIELD INACTIVE",
                     fontFamily = FontFamily.SansSerif,
                     fontWeight = FontWeight.ExtraBold,
                     fontSize = 30.sp,
@@ -835,7 +835,7 @@ private fun CadHeadlineStatus(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "SHIELD INACTIVE • TRAFFIC OPEN",
+                        text = "VPN DISCONNECTED • DEFAULT ROUTE",
                         fontFamily = FontFamily.Monospace,
                         fontWeight = FontWeight.Bold,
                         fontSize = 11.sp,
@@ -971,7 +971,7 @@ private fun CadBottomFooter() {
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
-            text = "CRYPT: CHACHA20-POLY1305   IP-MASK: 194.26.29.***   SYS.VER 4.19",
+            text = "CRYPT: CHACHA20-POLY1305   PROTOCOL: AMNEZIAWG   SYS.VER 4.19",
             fontFamily = FontFamily.Monospace,
             fontSize = 9.sp,
             color = CadTextMuted

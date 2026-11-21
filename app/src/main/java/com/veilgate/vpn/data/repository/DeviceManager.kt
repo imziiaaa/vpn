@@ -22,6 +22,9 @@ class DeviceManager(context: Context) {
         private const val KEY_APP_KEY = "app_key"
         private const val KEY_LAST_SERVER_ID = "last_server_id"
         private const val KEY_CACHED_SERVERS = "cached_servers_json"
+        private const val KEY_VPN_DISCLOSURE_ACCEPTED = "vpn_disclosure_accepted"
+        private const val KEY_VPN_DISCLOSURE_VERSION = "vpn_disclosure_version"
+        const val CURRENT_DISCLOSURE_VERSION = 1
 
         private fun initializePrefs(context: Context): SharedPreferences {
             return try {
@@ -108,5 +111,18 @@ class DeviceManager(context: Context) {
 
     fun setCachedServersJson(json: String) {
         prefs.edit().putString(KEY_CACHED_SERVERS, json).apply()
+    }
+
+    fun isVpnDisclosureAccepted(): Boolean {
+        val accepted = prefs.getBoolean(KEY_VPN_DISCLOSURE_ACCEPTED, false)
+        val version = prefs.getInt(KEY_VPN_DISCLOSURE_VERSION, 0)
+        return accepted && version >= CURRENT_DISCLOSURE_VERSION
+    }
+
+    fun setVpnDisclosureAccepted(accepted: Boolean) {
+        prefs.edit()
+            .putBoolean(KEY_VPN_DISCLOSURE_ACCEPTED, accepted)
+            .putInt(KEY_VPN_DISCLOSURE_VERSION, if (accepted) CURRENT_DISCLOSURE_VERSION else 0)
+            .apply()
     }
 }

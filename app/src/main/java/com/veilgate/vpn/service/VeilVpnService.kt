@@ -5,6 +5,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -14,6 +15,7 @@ import android.net.VpnService
 import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import com.veilgate.vpn.R
 import com.veilgate.vpn.VeilGateApp
 import com.veilgate.vpn.data.model.AwgInterfaceConfig
@@ -159,10 +161,10 @@ class VeilVpnService : VpnService() {
                     jmax = intent.getIntExtra(EXTRA_JMAX, 70),
                     s1 = intent.getIntExtra(EXTRA_S1, 0),
                     s2 = intent.getIntExtra(EXTRA_S2, 0),
-                    h1 = intent.getIntExtra(EXTRA_H1, 0),
-                    h2 = intent.getIntExtra(EXTRA_H2, 0),
-                    h3 = intent.getIntExtra(EXTRA_H3, 0),
-                    h4 = intent.getIntExtra(EXTRA_H4, 0)
+                    h1 = intent.getLongExtra(EXTRA_H1, 0L),
+                    h2 = intent.getLongExtra(EXTRA_H2, 0L),
+                    h3 = intent.getLongExtra(EXTRA_H3, 0L),
+                    h4 = intent.getLongExtra(EXTRA_H4, 0L)
                 )
 
                 val peer = AwgPeerConfig(
@@ -197,7 +199,16 @@ class VeilVpnService : VpnService() {
             _usedBytesFlow.value = 0L
 
             withContext(Dispatchers.Main) {
-                startForeground(NOTIFICATION_ID, buildNotification(SessionLimits.DEFAULT_TIME_LIMIT_SECONDS, 0L))
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    ServiceCompat.startForeground(
+                        this@VeilVpnService,
+                        NOTIFICATION_ID,
+                        buildNotification(SessionLimits.DEFAULT_TIME_LIMIT_SECONDS, 0L),
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                    )
+                } else {
+                    startForeground(NOTIFICATION_ID, buildNotification(SessionLimits.DEFAULT_TIME_LIMIT_SECONDS, 0L))
+                }
             }
 
             // Build TUN interface
@@ -235,6 +246,12 @@ class VeilVpnService : VpnService() {
                 }
             }
 
+            // Pre-resolve endpoint hostname on physical network before TUN default route is established
+            val resolvedEndpoint = withContext(Dispatchers.IO) {
+                AmneziaConfigBuilder.resolveEndpoint(peer.endpoint)
+            }
+            Log.i(TAG, "Pre-resolved tunnel endpoint: $resolvedEndpoint")
+
             val pfd = withContext(Dispatchers.Main) {
                 builder.establish()
             }
@@ -247,9 +264,9 @@ class VeilVpnService : VpnService() {
             // Detach descriptor to pass ownership to libwg-go.so
             val tunFd = pfd.detachFd()
 
-            // Build AmneziaWG UAPI userspace configuration (runs on IO dispatcher)
+            // Build AmneziaWG UAPI userspace configuration with pre-resolved endpoint
             val uapiConfig = withContext(Dispatchers.IO) {
-                AmneziaConfigBuilder.buildUapiConfig(iface, peer)
+                AmneziaConfigBuilder.buildUapiConfig(iface, peer, resolvedEndpoint)
             }
             Log.d(TAG, "Starting AmneziaWG Go core version: ${GoBackend.awgVersion()}")
 
@@ -262,11 +279,29 @@ class VeilVpnService : VpnService() {
 
             currentTunnelHandle = handle
 
-            // Protect underlying UDP sockets from VPN routing loop
+            // Protect underlying UDP sockets from VPN routing loop with strict return checks
             val sockV4 = GoBackend.awgGetSocketV4(handle)
             val sockV6 = GoBackend.awgGetSocketV6(handle)
-            if (sockV4 > 0) protect(sockV4)
-            if (sockV6 > 0) protect(sockV6)
+            var socketsProtected = true
+            if (sockV4 > 0) {
+                val ok = protect(sockV4)
+                if (!ok) {
+                    Log.e(TAG, "Failed to protect IPv4 socket ($sockV4) from VPN routing loop")
+                    socketsProtected = false
+                }
+            }
+            if (sockV6 > 0) {
+                val ok = protect(sockV6)
+                if (!ok) {
+                    Log.e(TAG, "Failed to protect IPv6 socket ($sockV6) from VPN routing loop")
+                    socketsProtected = false
+                }
+            }
+            if (!socketsProtected) {
+                Log.e(TAG, "Socket protection failed. Aborting tunnel to avoid packet routing deadlock.")
+                stopTunnel(DisconnectReason.CONNECTION_FAILED)
+                return
+            }
 
             Log.i(TAG, "AmneziaWG tunnel created (handle=$handle). Verifying bidirectional traffic before confirming connection...")
 
