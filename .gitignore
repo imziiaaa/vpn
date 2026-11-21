@@ -28,3 +28,4 @@ app/build/
 .cxx
 " .agent"/
  .agent/
+*.zip
