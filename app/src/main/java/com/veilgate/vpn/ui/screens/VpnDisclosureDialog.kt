@@ -1,10 +1,7 @@
 package com.veilgate.vpn.ui.screens
 
-import android.content.Intent
-import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,7 +16,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -31,11 +27,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.veilgate.vpn.R
@@ -59,9 +53,6 @@ fun VpnDisclosureDialog(
     onAccept: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    val context = LocalContext.current
-    val privacyPolicyUrl = stringResource(R.string.privacy_policy_url)
-
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = CadSurface,
@@ -170,38 +161,8 @@ fun VpnDisclosureDialog(
                     )
                 }
 
-                // Privacy Policy Link
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .clickable {
-                            try {
-                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(privacyPolicyUrl)).apply {
-                                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                                }
-                                context.startActivity(intent)
-                            } catch (_: Exception) {}
-                        }
-                        .padding(vertical = 4.dp)
-                ) {
-                    Text(
-                        text = "Read our full Privacy Policy",
-                        fontFamily = FontFamily.SansSerif,
-                        fontSize = 11.5.sp,
-                        color = CadRed,
-                        textDecoration = TextDecoration.Underline
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.OpenInNew,
-                        contentDescription = "Open Privacy Policy",
-                        tint = CadRed,
-                        modifier = Modifier.size(13.dp)
-                    )
-                }
-
                 Text(
-                    text = "By continuing, you acknowledge that Android will display a system confirmation request to configure the VPN connection.",
+                    text = stringResource(R.string.vpn_disclosure_next),
                     fontFamily = FontFamily.Monospace,
                     fontSize = 10.sp,
                     color = CadTextMuted,

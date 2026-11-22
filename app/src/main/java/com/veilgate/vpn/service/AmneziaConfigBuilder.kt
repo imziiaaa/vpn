@@ -1,125 +1,126 @@
 package com.veilgate.vpn.service
 
-import android.util.Base64
 import com.veilgate.vpn.data.model.AwgInterfaceConfig
 import com.veilgate.vpn.data.model.AwgPeerConfig
+import java.net.Inet4Address
+import java.net.Inet6Address
 import java.net.InetAddress
+import java.util.Base64
 
-object AmneziaConfigBuilder {
+internal data class TunnelAddress(val address: InetAddress, val prefix: Int)
 
-    /**
-     * Converts standard Base64 WireGuard / AmneziaWG keys into lowercase hex format expected by awg-go UAPI.
-     */
-    fun base64ToHex(base64: String?): String {
-        if (base64.isNullOrBlank()) return ""
-        return try {
-            val bytes = Base64.decode(base64.trim(), Base64.DEFAULT)
-            bytes.joinToString("") { "%02x".format(it) }
-        } catch (e: Exception) {
-            ""
+internal class ValidatedTunnel(
+    val addresses: List<TunnelAddress>,
+    val dns: List<InetAddress>,
+    val endpointAddress: InetAddress,
+    val mtu: Int,
+    val settings: String
+)
+
+internal object AmneziaConfigBuilder {
+    fun validate(iface: AwgInterfaceConfig, peer: AwgPeerConfig): ValidatedTunnel {
+        val privateKey = keyHex(iface.privateKey)
+        val publicKey = keyHex(peer.publicKey)
+        val sharedKey = peer.presharedKey?.let(::keyHex)
+        val addresses = fields(iface.address).map(::cidr)
+        require(addresses.map { it.address.javaClass }.distinct().size == addresses.size)
+        require(addresses.all { it.prefix > 0 && it.address.isUsable })
+        val routes = fields(peer.allowedIps).map(::cidr).filter { route ->
+            addresses.any { it.address.javaClass == route.address.javaClass }
         }
-    }
-
-    /**
-     * Bracket-aware parser for IPv4 ("1.2.3.4:51820", "host:51820")
-     * and IPv6 ("[2001:db8::1]:51820", "2001:db8::1") endpoints.
-     */
-    fun parseHostAndPort(endpoint: String): Pair<String, Int> {
-        val trimmed = endpoint.trim()
-        if (trimmed.startsWith("[")) {
-            val closingBracket = trimmed.indexOf(']')
-            if (closingBracket != -1) {
-                val host = trimmed.substring(1, closingBracket)
-                val after = trimmed.substring(closingBracket + 1)
-                val port = if (after.startsWith(":")) after.substring(1).toIntOrNull() ?: 51820 else 51820
-                return Pair(host, port)
-            }
+        require(addresses.all { address ->
+            routes.any { it.prefix == 0 && it.address.isAnyLocalAddress &&
+                it.address.javaClass == address.address.javaClass }
+        })
+        val dns = fields(iface.dns ?: "").map(::numericAddress).filter { resolver ->
+            addresses.any { it.address.javaClass == resolver.javaClass }
         }
-        val lastColon = trimmed.lastIndexOf(':')
-        return if (lastColon != -1 && trimmed.indexOf(':') == lastColon) {
-            val host = trimmed.substring(0, lastColon)
-            val port = trimmed.substring(lastColon + 1).toIntOrNull() ?: 51820
-            Pair(host, port)
+        require(dns.isNotEmpty() && dns.all { it.isUsable })
+        require(iface.mtu in 1280..1500 && peer.persistentKeepalive in 0..65535)
+
+        val (endpointAddress, port) = resolveEndpoint(peer.endpoint)
+        val endpoint = if (endpointAddress is Inet6Address) {
+            "[${endpointAddress.hostAddress}]:$port"
         } else {
-            Pair(trimmed, 51820)
+            "${endpointAddress.hostAddress}:$port"
         }
-    }
-
-    /**
-     * Resolves an endpoint host to a numeric IP while on the physical network.
-     * Emits standard bracketed format for IPv6: "[2001:db8::1]:port", or "1.2.3.4:port" for IPv4.
-     */
-    fun resolveEndpoint(endpoint: String): String {
-        val (host, port) = parseHostAndPort(endpoint)
-        val resolvedIp = try {
-            InetAddress.getByName(host).hostAddress ?: host
-        } catch (e: Exception) {
-            host
-        }
-        return if (resolvedIp.contains(":")) {
-            "[$resolvedIp]:$port"
-        } else {
-            "$resolvedIp:$port"
-        }
-    }
-
-    /**
-     * Constructs the UAPI configuration string parsed by libwg-go.so (awgTurnOn).
-     */
-    fun buildUapiConfig(
-        iface: AwgInterfaceConfig,
-        peer: AwgPeerConfig,
-        preResolvedEndpoint: String? = null
-    ): String {
-        val sb = StringBuilder()
-
-        // 1. Interface private key in hex
-        val privateKeyHex = base64ToHex(iface.privateKey)
-        sb.append("private_key=").append(privateKeyHex).append('\n')
-
-        // 2. Obfuscation parameters (Jc, Jmin, Jmax, S1, S2, H1-H4)
-        sb.append("jc=").append(iface.jc).append('\n')
-        sb.append("jmin=").append(iface.jmin).append('\n')
-        sb.append("jmax=").append(iface.jmax).append('\n')
-        sb.append("s1=").append(iface.s1).append('\n')
-        sb.append("s2=").append(iface.s2).append('\n')
-        sb.append("h1=").append(iface.h1).append('\n')
-        sb.append("h2=").append(iface.h2).append('\n')
-        sb.append("h3=").append(iface.h3).append('\n')
-        sb.append("h4=").append(iface.h4).append('\n')
-
-        // 3. Replace peers flag
-        sb.append("replace_peers=true\n")
-
-        // 4. Peer public key in hex
-        val publicKeyHex = base64ToHex(peer.publicKey)
-        sb.append("public_key=").append(publicKeyHex).append('\n')
-
-        // 5. Resolved endpoint IP:port (bracket-aware)
-        val finalEndpoint = preResolvedEndpoint ?: resolveEndpoint(peer.endpoint)
-        sb.append("endpoint=").append(finalEndpoint).append('\n')
-
-        // 6. Allowed IPs
-        peer.allowedIps.split(",").forEach { cidr ->
-            val cleanCidr = cidr.trim()
-            if (cleanCidr.isNotEmpty()) {
-                sb.append("allowed_ip=").append(cleanCidr).append('\n')
+        val settings = buildString {
+            appendLine("private_key=$privateKey")
+            appendLine("jc=${iface.jc}")
+            appendLine("jmin=${iface.jmin}")
+            appendLine("jmax=${iface.jmax}")
+            appendLine("s1=${iface.s1}")
+            appendLine("s2=${iface.s2}")
+            appendLine("h1=${iface.h1}")
+            appendLine("h2=${iface.h2}")
+            appendLine("h3=${iface.h3}")
+            appendLine("h4=${iface.h4}")
+            appendLine("replace_peers=true")
+            appendLine("public_key=$publicKey")
+            sharedKey?.let { appendLine("preshared_key=$it") }
+            appendLine("endpoint=$endpoint")
+            routes.forEach { appendLine("allowed_ip=${it.address.hostAddress}/${it.prefix}") }
+            if (peer.persistentKeepalive > 0) {
+                appendLine("persistent_keepalive_interval=${peer.persistentKeepalive}")
             }
         }
+        return ValidatedTunnel(addresses, dns, endpointAddress, iface.mtu, settings)
+    }
 
-        // 7. Persistent keepalive
-        if (peer.persistentKeepalive > 0) {
-            sb.append("persistent_keepalive_interval=").append(peer.persistentKeepalive).append('\n')
+    private fun fields(value: String): List<String> =
+        value.split(',').map(String::trim).also { require(it.none(String::isEmpty)) }
+
+    private fun cidr(value: String): TunnelAddress {
+        val parts = value.split('/')
+        require(parts.size == 2 && parts[1].all(Char::isDigit))
+        val address = numericAddress(parts[0])
+        val prefix = parts[1].toInt()
+        require(prefix in 0..(address.address.size * 8))
+        return TunnelAddress(address, prefix)
+    }
+
+    private fun numericAddress(value: String): InetAddress {
+        if (':' in value) {
+            require(value.matches(Regex("[0-9A-Fa-f:.]+")))
+            return InetAddress.getByName(value).also { require(it is Inet6Address) }
         }
+        val octets = value.split('.')
+        require(octets.size == 4 && octets.all {
+            it.length in 1..3 && it.all(Char::isDigit) && it.toInt() in 0..255
+        })
+        return InetAddress.getByAddress(octets.map { it.toInt().toByte() }.toByteArray())
+    }
 
-        // 8. Preshared key in hex (if provided)
-        if (!peer.presharedKey.isNullOrBlank()) {
-            val pskHex = base64ToHex(peer.presharedKey)
-            if (pskHex.isNotEmpty()) {
-                sb.append("preshared_key=").append(pskHex).append('\n')
+    private fun resolveEndpoint(endpoint: String): Pair<InetAddress, Int> {
+        val match = Regex("""(?:\[([0-9A-Fa-f:.]+)]|([A-Za-z0-9.-]{1,253})):([0-9]{1,5})""")
+            .matchEntire(endpoint)
+        require(match != null)
+        val port = match.groupValues[3].toInt()
+        require(port in 1..65535)
+        val host = match.groupValues[2]
+        val endpoints = when {
+            host.isEmpty() -> listOf(numericAddress(match.groupValues[1])).also {
+                require(it.single() is Inet6Address)
+            }
+            host.all { it == '.' || it.isDigit() } -> listOf(numericAddress(host))
+            else -> {
+                require(host.removeSuffix(".").split('.').all {
+                    it.matches(Regex("[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"))
+                })
+                InetAddress.getAllByName(host).toList()
             }
         }
-
-        return sb.toString()
+        val allowed = endpoints.filter { it.isUsable }
+        val resolved = allowed.firstOrNull { it is Inet4Address } ?: allowed.firstOrNull()
+        return requireNotNull(resolved) to port
     }
+
+    private fun keyHex(value: String): String {
+        val bytes = Base64.getDecoder().decode(value)
+        require(bytes.size == 32 && bytes.any { it != 0.toByte() })
+        return bytes.joinToString("") { "%02x".format(it) }
+    }
+
+    private val InetAddress.isUsable: Boolean
+        get() = !isAnyLocalAddress && !isLoopbackAddress && !isMulticastAddress && !isLinkLocalAddress
 }

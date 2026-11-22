@@ -1,10 +1,10 @@
-## This file must NOT be checked into Version Control Systems,
-# as it contains information specific to your local configuration.
+# Copy this file to local.properties and set sdk.dir for your machine.
+sdk.dir=/path/to/Android/sdk
 
-# Location of the SDK. This is only used by Gradle.
-# For example:
-# sdk.dir=/Users/<username>/Library/Android/sdk
-
-# VeilGate Control Plane Backend & Auth
-VEILGATE_BASE_URL=https://your-veilgate-instance.vercel.app/
-VEILGATE_APP_KEY=vg_app_your_secret_key_here
+# Set all four inputs locally or through CI to sign release artifacts with the
+# upload key registered for com.veilgate.vpn in Google Play Console.
+# Without these inputs the release APK and AAB are unsigned.
+# RAVEN_UPLOAD_STORE_FILE=/absolute/path/to/upload.jks
+# RAVEN_UPLOAD_STORE_PASSWORD=
+# RAVEN_UPLOAD_KEY_ALIAS=
+# RAVEN_UPLOAD_KEY_PASSWORD=

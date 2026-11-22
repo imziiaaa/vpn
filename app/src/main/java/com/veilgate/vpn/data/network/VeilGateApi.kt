@@ -1,34 +1,25 @@
 package com.veilgate.vpn.data.network
 
-import com.veilgate.vpn.data.model.ConnectRequest
-import com.veilgate.vpn.data.model.ConnectResponse
-import com.veilgate.vpn.data.model.DisconnectRequest
 import com.veilgate.vpn.data.model.ServerListResponse
-import com.veilgate.vpn.data.model.SessionData
-import retrofit2.Response
-import retrofit2.http.Body
-import retrofit2.http.GET
-import retrofit2.http.POST
-import retrofit2.http.Query
+import com.veilgate.vpn.data.model.TunnelLease
+import okhttp3.HttpUrl
 
-interface VeilGateApi {
-
-    @GET("api/app/servers")
-    suspend fun getServers(): Response<ServerListResponse>
-
-    @POST("api/app/connect")
-    suspend fun connect(
-        @Body request: ConnectRequest
-    ): Response<ConnectResponse>
-
-    @GET("api/app/session")
-    suspend fun getSession(
-        @Query("deviceId") deviceId: String,
-        @Query("nodeId") nodeId: String?
-    ): Response<SessionData>
-
-    @POST("api/app/disconnect")
-    suspend fun disconnect(
-        @Body request: DisconnectRequest
-    ): Response<Map<String, Any>>
+internal class MobileCredentials(val accessToken: String, val refreshToken: String) {
+    init {
+        require(accessToken.isNotBlank() && refreshToken.isNotBlank())
+    }
 }
+
+/** Client operations. The wire adapter maps the deployed mobile contract to these types. */
+internal interface VeilGateApi {
+    val origin: HttpUrl
+
+    suspend fun enroll(installationId: String, disclosureVersion: Int): MobileCredentials
+    suspend fun refresh(refreshToken: String): MobileCredentials
+    suspend fun getServers(accessToken: String): ServerListResponse
+    suspend fun connect(accessToken: String, nodeId: String, attemptId: String): TunnelLease
+    suspend fun disconnect(accessToken: String, sessionId: String)
+}
+
+internal class AccessTokenExpired : Exception()
+internal class RefreshTokenRejected : Exception()

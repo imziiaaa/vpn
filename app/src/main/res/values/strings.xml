@@ -9,15 +9,13 @@
     <string name="data_left">Data Limit</string>
     <string name="server_select">Select Node</string>
 
-    <!-- Prominent Disclosure & Consent (Google Play VpnService & User Data Policy) -->
-    <string name="vpn_disclosure_title">VPN Service &amp; Privacy Notice</string>
-    <string name="vpn_disclosure_summary">Raven VPN uses Android\'s VpnService to create a secure, encrypted network tunnel between your device and our VPN nodes.</string>
-    <string name="vpn_disclosure_purpose_title">Why is VpnService required?</string>
-    <string name="vpn_disclosure_purpose_text">Android\'s VpnService is the core system API that enables Raven VPN to establish an encrypted tunnel. This protects your network packets from interception when connecting through public Wi-Fi or untrusted networks.</string>
-    <string name="vpn_disclosure_data_title">What data is routed, collected, and transmitted?</string>
-    <string name="vpn_disclosure_data_text">1. Device Traffic: All outgoing and incoming internet traffic is routed through the encrypted tunnel to the selected VPN node.\n2. Connection Metadata: To provision your session and manage server capacity, the app transmits an app-generated installation ID, device model name, and selected server node ID to our control plane.\n3. Content Privacy: The Raven VPN client application does not monitor, inspect, or store your browsing content, DNS destinations, or visited websites.</string>
-    <string name="vpn_disclosure_agree">Agree &amp; Continue</string>
-    <string name="vpn_disclosure_decline">Cancel</string>
-    <string name="privacy_policy">Privacy Policy</string>
-    <string name="privacy_policy_url">https://veilgate.org/privacy</string>
+    <string name="vpn_disclosure_title">VPN service and privacy</string>
+    <string name="vpn_disclosure_summary">Raven VPN uses Android VpnService to route your internet traffic through an encrypted tunnel to the node you choose.</string>
+    <string name="vpn_disclosure_purpose_title">What the VPN routes</string>
+    <string name="vpn_disclosure_purpose_text">While connected, the selected node forwards your traffic to its destinations. The configured DNS resolver receives the domain names your device asks it to look up. Encryption between your device and the VPN node ends at that node. Apps such as browsers can use HTTPS to encrypt traffic to their destinations.</string>
+    <string name="vpn_disclosure_data_title">Session information</string>
+    <string name="vpn_disclosure_data_text">Raven VPN uses an app-generated installation ID and your chosen node to set up access and allocate a tunnel session. It uses session timing and total transferred bytes to enforce time and data limits.</string>
+    <string name="vpn_disclosure_next">Agree to load VPN nodes. After you choose a node and tap Protect, Android may ask you to allow the VPN connection.</string>
+    <string name="vpn_disclosure_agree">Agree and load nodes</string>
+    <string name="vpn_disclosure_decline">Decline</string>
 </resources>

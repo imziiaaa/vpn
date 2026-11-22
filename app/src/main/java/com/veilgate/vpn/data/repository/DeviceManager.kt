@@ -1,128 +1,83 @@
 package com.veilgate.vpn.data.repository
 
 import android.content.Context
-import android.content.SharedPreferences
-import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
-import com.veilgate.vpn.BuildConfig
+import java.io.File
 import java.util.UUID
 
 class DeviceManager(context: Context) {
-
-    private val prefs: SharedPreferences = initializePrefs(context)
+    private val appContext = context.applicationContext
+    private val prefs = appContext.getSharedPreferences("raven_preferences", Context.MODE_PRIVATE)
 
     companion object {
-        private const val TAG = "DeviceManager"
-        private const val OLD_PREFS_NAME = "veilgate_prefs"
-        private const val SECURE_PREFS_NAME = "veilgate_encrypted_prefs"
+        const val CURRENT_DISCLOSURE_VERSION = 2
+        private const val DEVICE_ID = "device_id"
+        private const val LAST_SERVER_ID = "last_server_id"
+        private const val DISCLOSURE_VERSION = "vpn_disclosure_version"
+        private const val LEGACY_MIGRATED = "legacy_migrated"
+        private const val PLAIN_LEGACY = "veilgate_prefs"
+        private const val ENCRYPTED_LEGACY = "veilgate_encrypted_prefs"
+    }
 
-        private const val KEY_DEVICE_ID = "device_id"
-        private const val KEY_BASE_URL = "base_url"
-        private const val KEY_APP_KEY = "app_key"
-        private const val KEY_LAST_SERVER_ID = "last_server_id"
-        private const val KEY_CACHED_SERVERS = "cached_servers_json"
-        private const val KEY_VPN_DISCLOSURE_ACCEPTED = "vpn_disclosure_accepted"
-        private const val KEY_VPN_DISCLOSURE_VERSION = "vpn_disclosure_version"
-        const val CURRENT_DISCLOSURE_VERSION = 1
+    @Synchronized
+    fun migrateLegacyPreferences() {
+        if (prefs.getBoolean(LEGACY_MIGRATED, false)) return
 
-        private fun initializePrefs(context: Context): SharedPreferences {
-            return try {
-                val masterKey = MasterKey.Builder(context)
-                    .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                    .build()
+        val plain = appContext.getSharedPreferences(PLAIN_LEGACY, Context.MODE_PRIVATE)
+        val encryptedExists = File(appContext.dataDir, "shared_prefs/$ENCRYPTED_LEGACY.xml").exists() ||
+            File(appContext.dataDir, "shared_prefs/$ENCRYPTED_LEGACY.xml.bak").exists()
+        val encryptedSelection = if (encryptedExists) try {
+            val key = MasterKey.Builder(appContext)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+            EncryptedSharedPreferences.create(
+                appContext,
+                ENCRYPTED_LEGACY,
+                key,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            ).getString(LAST_SERVER_ID, null)
+        } catch (_: Exception) {
+            // This affects only the previous node selection. Enrollment uses a new installation ID.
+            null
+        } else null
 
-                val securePrefs = EncryptedSharedPreferences.create(
-                    context,
-                    SECURE_PREFS_NAME,
-                    masterKey,
-                    EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                    EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-                )
+        val selection = encryptedSelection ?: plain.getString(LAST_SERVER_ID, null)
+        if (getLastServerId() == null && selection != null) setLastServerId(selection)
 
-                // Migrate unencrypted legacy preferences if they exist
-                val oldPrefs = context.getSharedPreferences(OLD_PREFS_NAME, Context.MODE_PRIVATE)
-                val oldAll = oldPrefs.all
-                if (oldAll.isNotEmpty()) {
-                    val editor = securePrefs.edit()
-                    for ((key, value) in oldAll) {
-                        when (value) {
-                            is String -> editor.putString(key, value)
-                            is Boolean -> editor.putBoolean(key, value)
-                            is Int -> editor.putInt(key, value)
-                            is Long -> editor.putLong(key, value)
-                            is Float -> editor.putFloat(key, value)
-                        }
-                    }
-                    editor.apply()
-                    oldPrefs.edit().clear().apply()
-                    Log.i(TAG, "Successfully migrated ${oldAll.size} entries to EncryptedSharedPreferences")
-                }
+        // Remove the legacy endpoint and key, even if the previous Keystore key is unusable.
+        check(!encryptedExists || appContext.deleteSharedPreferences(ENCRYPTED_LEGACY)) {
+            "Raven VPN couldn't remove old access settings. Restart the app and try again."
+        }
+        check(plain.edit().remove("app_key").remove("base_url").commit()) {
+            "Raven VPN couldn't remove old access settings. Restart the app and try again."
+        }
+        check(prefs.edit().putBoolean(LEGACY_MIGRATED, true).commit()) {
+            "Raven VPN couldn't save the settings upgrade. Check available storage and retry."
+        }
+    }
 
-                securePrefs
-            } catch (e: Exception) {
-                Log.e(TAG, "EncryptedSharedPreferences initialization failed; falling back to private prefs", e)
-                context.getSharedPreferences(OLD_PREFS_NAME, Context.MODE_PRIVATE)
+    fun getOrCreateInstallationId(): String = prefs.getString(DEVICE_ID, null)
+        ?: UUID.randomUUID().toString().also { id ->
+            check(prefs.edit().putString(DEVICE_ID, id).commit()) {
+                "Raven VPN couldn't save its installation ID. Check available storage and retry."
             }
         }
-    }
 
-    /**
-     * Retrieves or generates a persistent device UUID.
-     * Guaranteed to be alphanumeric + dashes, safe for Raven VPN control plane.
-     */
-    fun getDeviceId(): String {
-        var id = prefs.getString(KEY_DEVICE_ID, null)
-        if (id.isNullOrBlank()) {
-            val generated = "vg-" + UUID.randomUUID().toString().replace("-", "").take(16)
-            prefs.edit().putString(KEY_DEVICE_ID, generated).apply()
-            id = generated
-        }
-        return id
-    }
-
-    fun getBaseUrl(): String {
-        return prefs.getString(KEY_BASE_URL, null) ?: BuildConfig.DEFAULT_BASE_URL
-    }
-
-    fun setBaseUrl(url: String) {
-        prefs.edit().putString(KEY_BASE_URL, url).apply()
-    }
-
-    fun getAppKey(): String {
-        return prefs.getString(KEY_APP_KEY, null) ?: BuildConfig.DEFAULT_APP_KEY
-    }
-
-    fun setAppKey(key: String?) {
-        prefs.edit().putString(KEY_APP_KEY, key).apply()
-    }
-
-    fun getLastServerId(): String? {
-        return prefs.getString(KEY_LAST_SERVER_ID, null)
-    }
+    fun getLastServerId(): String? = prefs.getString(LAST_SERVER_ID, null)
 
     fun setLastServerId(serverId: String) {
-        prefs.edit().putString(KEY_LAST_SERVER_ID, serverId).apply()
+        prefs.edit().putString(LAST_SERVER_ID, serverId).apply()
     }
 
-    fun getCachedServersJson(): String? {
-        return prefs.getString(KEY_CACHED_SERVERS, null)
-    }
+    fun isVpnDisclosureAccepted(): Boolean =
+        prefs.getInt(DISCLOSURE_VERSION, 0) == CURRENT_DISCLOSURE_VERSION
 
-    fun setCachedServersJson(json: String) {
-        prefs.edit().putString(KEY_CACHED_SERVERS, json).apply()
-    }
-
-    fun isVpnDisclosureAccepted(): Boolean {
-        val accepted = prefs.getBoolean(KEY_VPN_DISCLOSURE_ACCEPTED, false)
-        val version = prefs.getInt(KEY_VPN_DISCLOSURE_VERSION, 0)
-        return accepted && version >= CURRENT_DISCLOSURE_VERSION
-    }
-
-    fun setVpnDisclosureAccepted(accepted: Boolean) {
-        prefs.edit()
-            .putBoolean(KEY_VPN_DISCLOSURE_ACCEPTED, accepted)
-            .putInt(KEY_VPN_DISCLOSURE_VERSION, if (accepted) CURRENT_DISCLOSURE_VERSION else 0)
-            .apply()
+    fun acceptVpnDisclosure(): Boolean {
+        val version = prefs.getInt(DISCLOSURE_VERSION, 0)
+        if (prefs.edit().putInt(DISCLOSURE_VERSION, CURRENT_DISCLOSURE_VERSION).commit()) return true
+        prefs.edit().putInt(DISCLOSURE_VERSION, version).apply()
+        return false
     }
 }

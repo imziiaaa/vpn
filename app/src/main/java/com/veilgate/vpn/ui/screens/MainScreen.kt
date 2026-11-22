@@ -38,9 +38,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -56,6 +54,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.veilgate.vpn.data.model.ServerNode
 import com.veilgate.vpn.data.model.VpnStatus
 import com.veilgate.vpn.ui.theme.CadBg
 import com.veilgate.vpn.ui.theme.CadBorder
@@ -75,12 +74,13 @@ import kotlin.math.sin
 @Composable
 fun MainScreen(
     viewModel: MainViewModel,
-    onRequestVpnPermission: () -> Unit
+    showServerPicker: Boolean,
+    onShowServerPicker: (Boolean) -> Unit,
+    onReviewDisclosure: () -> Unit,
+    onRequestVpnPermission: (ServerNode) -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
-
-    var showServerPicker by remember { mutableStateOf(false) }
 
     val isConnected = (uiState.status == VpnStatus.CONNECTED)
     val isConnecting = (uiState.status == VpnStatus.CONNECTING || uiState.status == VpnStatus.RECONNECTING || uiState.status == VpnStatus.DISCONNECTING)
@@ -129,10 +129,10 @@ fun MainScreen(
                 }
 
                 // SECTION 2: 3D Wireframe Globe with Radar & Target Lock
-                val locationParts = (uiState.selectedServer?.location ?: "Frankfurt, DE").split(",")
-                val serverCity = locationParts.getOrNull(0)?.trim() ?: "Frankfurt"
-                val serverCountry = locationParts.getOrNull(1)?.trim() ?: "DE"
-                val serverCode = uiState.selectedServer?.name ?: "FRA-04"
+                val locationParts = uiState.selectedServer?.location.orEmpty().split(",")
+                val serverCity = locationParts.first().trim()
+                val serverCountry = locationParts.getOrNull(1)?.trim().orEmpty()
+                val serverCode = uiState.selectedServer?.name.orEmpty()
 
                 Box(
                     modifier = Modifier
@@ -145,8 +145,7 @@ fun MainScreen(
                         isConnected = isConnected,
                         serverCity = serverCity,
                         serverCountry = serverCountry,
-                        serverCode = serverCode,
-                        pingMs = 18
+                        serverCode = serverCode
                     )
                 }
 
@@ -161,9 +160,12 @@ fun MainScreen(
 
                     // Node Selector Button
                     CadNodeSelectorPill(
-                        selectedServerCity = serverCity,
+                        selectedServerCity = uiState.selectedServer?.let { serverCity },
                         isConnected = isConnected,
-                        onClick = { showServerPicker = true }
+                        onClick = {
+                            if (!uiState.hasConsent) onReviewDisclosure()
+                            else if (!isConnected && !isConnecting) onShowServerPicker(true)
+                        }
                     )
 
                     Spacer(modifier = Modifier.height(18.dp))
@@ -185,11 +187,18 @@ fun MainScreen(
                         status = uiState.status,
                         isConnected = isConnected,
                         isConnecting = isConnecting,
+                        protectLabel = when {
+                            !uiState.hasConsent -> "REVIEW VPN DISCLOSURE"
+                            uiState.selectedServer == null -> "CHOOSE A NODE"
+                            else -> "PROTECT"
+                        },
                         onTrigger = {
-                            if (isConnected || isConnecting) {
-                                viewModel.disconnect()
-                            } else {
-                                onRequestVpnPermission()
+                            val target = uiState.selectedServer
+                            when {
+                                isConnected || isConnecting -> viewModel.disconnect()
+                                !uiState.hasConsent -> onReviewDisclosure()
+                                target == null || uiState.isLoadingServers -> onShowServerPicker(true)
+                                else -> onRequestVpnPermission(target)
                             }
                         }
                     )
@@ -208,11 +217,11 @@ fun MainScreen(
         ServerPickerSheet(
             servers = uiState.availableServers,
             selectedServer = uiState.selectedServer,
-            onSelect = { server ->
-                viewModel.selectServer(server)
-                showServerPicker = false
-            },
-            onDismiss = { showServerPicker = false }
+            isLoading = uiState.isLoadingServers,
+            errorMessage = uiState.serverListError,
+            onRefresh = viewModel::refreshServers,
+            onSelect = viewModel::selectServer,
+            onDismiss = { onShowServerPicker(false) }
         )
     }
 }
@@ -422,8 +431,7 @@ private fun CadGlobeRadarVisual(
     isConnected: Boolean,
     serverCity: String,
     serverCountry: String,
-    serverCode: String,
-    pingMs: Int
+    serverCode: String
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "GlobeRotation")
     val rotationAnim by infiniteTransition.animateFloat(
@@ -612,22 +620,13 @@ private fun CadGlobeRadarVisual(
                         )
                     }
                     Spacer(modifier = Modifier.height(3.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = serverCode,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 10.sp,
-                            color = CadRed
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "•   ${pingMs}ms",
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 10.sp,
-                            color = CadRed
-                        )
-                    }
+                    Text(
+                        text = serverCode,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 10.sp,
+                        color = CadRed
+                    )
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(
@@ -637,7 +636,7 @@ private fun CadGlobeRadarVisual(
                         )
                         Spacer(modifier = Modifier.width(5.dp))
                         Text(
-                            text = "TARGET // FRA [OFF]",
+                            text = if (serverCode.isBlank()) "NO NODE SELECTED" else "TARGET // ${serverCode} [OFF]",
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Bold,
                             fontSize = 11.sp,
@@ -645,12 +644,6 @@ private fun CadGlobeRadarVisual(
                         )
                     }
                     Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = "LATENCY: --- ms",
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 9.5.sp,
-                        color = CadTextDim
-                    )
                     Text(
                         text = "STANDBY ROUTE",
                         fontFamily = FontFamily.Monospace,
@@ -708,7 +701,7 @@ private fun CadBelowGlobeTelemetry(isConnected: Boolean) {
  */
 @Composable
 private fun CadNodeSelectorPill(
-    selectedServerCity: String,
+    selectedServerCity: String?,
     isConnected: Boolean,
     onClick: () -> Unit
 ) {
@@ -732,10 +725,10 @@ private fun CadNodeSelectorPill(
                 modifier = Modifier.size(15.dp)
             )
             Spacer(modifier = Modifier.width(7.dp))
-            val nodeLabel = if (isConnected) {
-                "ACTIVE NODE // ${selectedServerCity.uppercase()} >"
-            } else {
-                "SELECT NODE // ${selectedServerCity.uppercase()} >"
+            val nodeLabel = when {
+                selectedServerCity == null -> "SELECT NODE >"
+                isConnected -> "ACTIVE NODE // ${selectedServerCity.uppercase()} >"
+                else -> "SELECT NODE // ${selectedServerCity.uppercase()} >"
             }
             Text(
                 text = nodeLabel,
@@ -858,6 +851,7 @@ private fun CadTapActionControl(
     status: VpnStatus,
     isConnected: Boolean,
     isConnecting: Boolean,
+    protectLabel: String,
     onTrigger: () -> Unit
 ) {
     val isDisconnecting = (status == VpnStatus.DISCONNECTING)
@@ -872,7 +866,7 @@ private fun CadTapActionControl(
             .border(if (isConnected) 1.2.dp else 0.dp, borderColor, buttonShape)
             .clip(buttonShape)
             .background(buttonBg)
-            .clickable(onClick = onTrigger),
+            .clickable(enabled = !isDisconnecting, onClick = onTrigger),
         contentAlignment = Alignment.Center
     ) {
         if (isDisconnecting) {
@@ -907,7 +901,7 @@ private fun CadTapActionControl(
                 )
                 Spacer(modifier = Modifier.width(10.dp))
                 Text(
-                    text = "ENGAGING TUNNEL...",
+                    text = "CANCEL CONNECTION",
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Bold,
                     fontSize = 13.sp,
@@ -942,7 +936,7 @@ private fun CadTapActionControl(
                 horizontalArrangement = Arrangement.Center
             ) {
                 Text(
-                    text = "TAP TO PROTECT",
+                    text = protectLabel,
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Bold,
                     fontSize = 13.sp,

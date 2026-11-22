@@ -1,5 +1,4 @@
 import java.util.Properties
-import java.io.FileInputStream
 
 plugins {
     alias(libs.plugins.android.application)
@@ -10,25 +9,35 @@ plugins {
 val localProperties = Properties()
 val localPropertiesFile = rootProject.file("local.properties")
 if (localPropertiesFile.exists()) {
-    localProperties.load(FileInputStream(localPropertiesFile))
+    localPropertiesFile.inputStream().use(localProperties::load)
 }
 
-val defaultBaseUrl: String = localProperties.getProperty("VEILGATE_BASE_URL") ?: "https://api.example.com/"
-val defaultAppKey: String = localProperties.getProperty("VEILGATE_APP_KEY") ?: ""
+val uploadInputs = listOf(
+    "RAVEN_UPLOAD_STORE_FILE",
+    "RAVEN_UPLOAD_STORE_PASSWORD",
+    "RAVEN_UPLOAD_KEY_ALIAS",
+    "RAVEN_UPLOAD_KEY_PASSWORD"
+).associateWith { name ->
+    providers.environmentVariable(name).orNull?.takeIf(String::isNotBlank)
+        ?: localProperties.getProperty(name)?.takeIf(String::isNotBlank)
+}
+val missingUploadInputs = uploadInputs.filterValues { it == null }.keys
+val hasUploadKey = missingUploadInputs.isEmpty()
+if (!hasUploadKey && missingUploadInputs.size < uploadInputs.size) {
+    logger.warn("Release artifacts will be unsigned. Missing Play upload signing inputs: ${missingUploadInputs.joinToString()}")
+}
 
 android {
     namespace = "com.veilgate.vpn"
-    compileSdk = 35
+    compileSdk = 36
+    buildToolsVersion = "36.0.0"
 
     defaultConfig {
         applicationId = "com.veilgate.vpn"
         minSdk = 26
-        targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
-
-        buildConfigField("String", "DEFAULT_BASE_URL", "\"$defaultBaseUrl\"")
-        buildConfigField("String", "DEFAULT_APP_KEY", "\"$defaultAppKey\"")
+        targetSdk = 36
+        versionCode = 2
+        versionName = "1.0.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -36,10 +45,20 @@ android {
         }
     }
 
+    signingConfigs {
+        if (hasUploadKey) {
+            create("playUpload") {
+                storeFile = rootProject.file(uploadInputs.getValue("RAVEN_UPLOAD_STORE_FILE")!!)
+                storePassword = uploadInputs.getValue("RAVEN_UPLOAD_STORE_PASSWORD")
+                keyAlias = uploadInputs.getValue("RAVEN_UPLOAD_KEY_ALIAS")
+                keyPassword = uploadInputs.getValue("RAVEN_UPLOAD_KEY_PASSWORD")
+            }
+        }
+    }
     buildTypes {
         release {
             isMinifyEnabled = true
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("playUpload")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -55,7 +74,6 @@ android {
     }
     buildFeatures {
         compose = true
-        buildConfig = true
     }
     packaging {
         resources {
@@ -80,10 +98,10 @@ dependencies {
     implementation(libs.retrofit)
     implementation(libs.retrofit.converter.gson)
     implementation(libs.okhttp)
-    implementation(libs.okhttp.logging)
     implementation(libs.gson)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.security.crypto)
 
     debugImplementation(libs.androidx.ui.tooling)
+    testImplementation("junit:junit:4.13.2")
 }

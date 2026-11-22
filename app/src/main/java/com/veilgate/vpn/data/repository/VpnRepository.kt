@@ -1,142 +1,159 @@
 package com.veilgate.vpn.data.repository
 
 import android.content.Context
-import android.util.Log
-import com.google.gson.Gson
-import com.veilgate.vpn.data.model.ConnectRequest
-import com.veilgate.vpn.data.model.ConnectResponse
-import com.veilgate.vpn.data.model.DisconnectRequest
-import com.veilgate.vpn.data.model.PolicyData
-import com.veilgate.vpn.data.model.ServerListResponse
-import com.veilgate.vpn.data.model.ServerNode
+import com.veilgate.vpn.data.network.AccessTokenExpired
+import com.veilgate.vpn.data.network.MobileCredentials
 import com.veilgate.vpn.data.network.NetworkClient
+import com.veilgate.vpn.data.network.RefreshTokenRejected
 import com.veilgate.vpn.data.network.VeilGateApi
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.IOException
 
-class VpnRepository(private val context: Context) {
-
-    private val gson = Gson()
+class VpnRepository private constructor(context: Context, private val api: VeilGateApi?) {
     val deviceManager = DeviceManager(context)
+    private val vault = api?.let { CredentialVault(context, it.origin) }
+    private val authLock = Mutex()
+    private val leaseLock = Mutex()
+    private var credentials: MobileCredentials? = null
+    private val activeSessions = mutableSetOf<String>()
+    private val leaseJournal = context.getSharedPreferences("raven_lease_journal", Context.MODE_PRIVATE)
+    private val leaseKey = api?.origin?.let { "${it.scheme}://${it.host}:${it.port}" }
 
     companion object {
-        private const val TAG = "VpnRepository"
+        @Volatile
+        private var instance: VpnRepository? = null
 
-        val DEFAULT_FALLBACK_SERVERS = listOf(
-            ServerNode(
-                id = "node-0131abc1",
-                name = "🇺🇸 FRA-01",
-                location = "New York, USA",
-                endpointHost = "169.197.141.248",
-                endpointPort = 7088,
-                activePeers = 2,
-                capacityPeers = 250,
-                loadPercent = 1,
-                status = "online"
-            ),
-            ServerNode(
-                id = "node-3ec6dd15",
-                name = "🇯🇵 TYO-02",
-                location = "Tokyo, JP",
-                endpointHost = "103.173.178.124",
-                endpointPort = 6743,
-                activePeers = 1,
-                capacityPeers = 250,
-                loadPercent = 0,
-                status = "online"
-            ),
-            ServerNode(
-                id = "node-c2a327ac",
-                name = "🇵🇱 WAW-03",
-                location = "Warsaw, PL",
-                endpointHost = "51.77.53.215",
-                endpointPort = 6284,
-                activePeers = 0,
-                capacityPeers = 250,
-                loadPercent = 0,
-                status = "online"
-            )
-        )
-    }
-
-    private fun getApi(): VeilGateApi {
-        return NetworkClient.createApi(
-            context = context,
-            baseUrl = deviceManager.getBaseUrl(),
-            appKey = deviceManager.getAppKey()
-        )
-    }
-
-    suspend fun fetchServers(): Result<ServerListResponse> = withContext(Dispatchers.IO) {
-        try {
-            val response = getApi().getServers()
-            if (response.isSuccessful && response.body() != null) {
-                val body = response.body()!!
-                // Cache server list locally for offline resilience
-                try {
-                    deviceManager.setCachedServersJson(gson.toJson(body))
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to cache servers: ${e.message}")
-                }
-                Result.success(body)
-            } else {
-                Log.w(TAG, "Server returned HTTP ${response.code()}: ${response.message()}. Loading cached fallback...")
-                Result.success(getCachedOrFallbackResponse())
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Network exception fetching servers: ${e.message}. Loading cached fallback...")
-            val fallback = getCachedOrFallbackResponse()
-            Result.success(fallback)
+        fun get(context: Context): VpnRepository = instance ?: synchronized(this) {
+            instance ?: VpnRepository(context.applicationContext, NetworkClient.mobileApi())
+                .also { instance = it }
         }
     }
 
-    private fun getCachedOrFallbackResponse(): ServerListResponse {
-        val cachedJson = deviceManager.getCachedServersJson()
-        if (!cachedJson.isNullOrBlank()) {
+    suspend fun fetchServers() = operation { client ->
+        authenticated(client) { client.getServers(it) }.also { result ->
+            check(result.ok && result.servers != null &&
+                result.servers.all { it.id.isNotBlank() && it.name.isNotBlank() } &&
+                result.servers.distinctBy { it.id }.size == result.servers.size) {
+                "Raven VPN received an invalid node list. Refresh to try again."
+            }
+        }
+    }
+
+    suspend fun requestTunnel(nodeId: String, attemptId: String) = operation { client ->
+        val lease = authenticated(client) { client.connect(it, nodeId, attemptId) }
+        check(lease.sessionId.isNotBlank()) { "The VPN service returned an invalid session ID." }
+        val recorded = leaseLock.withLock {
+            val sessions = savedSessions() + lease.sessionId
+            writeSessions(sessions).also { if (it) activeSessions += lease.sessionId }
+        }
+        if (!recorded) {
+            withContext(NonCancellable) {
+                runCatching { authenticated(client) { client.disconnect(it, lease.sessionId) } }
+            }
+            error("Raven VPN couldn't save the session safely. Check available storage and retry.")
+        }
+        lease
+    }
+
+    suspend fun releaseLease(sessionId: String) = withContext(Dispatchers.IO) {
+        leaseLock.withLock { activeSessions -= sessionId }
+        repeat(3) { attempt ->
+            if (attempt > 0) delay(attempt * 2_000L)
+            if (releaseIfInactive(sessionId)) return@withContext
+        }
+    }
+
+    suspend fun recoverLeases() = withContext(Dispatchers.IO) {
+        if (leaseKey != null && deviceManager.isVpnDisclosureAccepted()) {
+            val orphans = leaseLock.withLock { savedSessions() - activeSessions }
+            for (session in orphans) releaseIfInactive(session)
+        }
+    }
+
+    private suspend fun releaseIfInactive(sessionId: String): Boolean = leaseLock.withLock {
+        if (sessionId in activeSessions || sessionId !in savedSessions()) return@withLock true
+        val result = operation { client ->
+            authenticated(client) { client.disconnect(it, sessionId) }
+        }
+        result.isSuccess && writeSessions(savedSessions() - sessionId)
+    }
+
+    private fun savedSessions(): Set<String> =
+        leaseJournal.getStringSet(checkNotNull(leaseKey), emptySet()).orEmpty().toSet()
+
+    private fun writeSessions(sessions: Set<String>): Boolean =
+        leaseJournal.edit().putStringSet(checkNotNull(leaseKey), sessions).commit()
+
+    private suspend fun <T> operation(block: suspend (VeilGateApi) -> T): Result<T> =
+        withContext(Dispatchers.IO) {
             try {
-                val cached = gson.fromJson(cachedJson, ServerListResponse::class.java)
-                if (cached != null && !cached.servers.isNullOrEmpty()) {
-                    return cached
+                check(deviceManager.isVpnDisclosureAccepted()) {
+                    "Review the VPN disclosure before setting up access."
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error deserializing cached servers", e)
+                deviceManager.migrateLegacyPreferences()
+                val client = api ?: error(
+                    "Raven VPN mobile access is unavailable. Try Refresh later or contact support."
+                )
+                Result.success(block(client))
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: AccessTokenExpired) {
+                Result.failure(IllegalStateException("Raven VPN couldn't verify mobile access. Try again."))
+            } catch (_: IOException) {
+                Result.failure(IllegalStateException("Couldn't reach Raven VPN. Check your internet connection and retry."))
+            } catch (error: CredentialStorageException) {
+                Result.failure(error)
+            } catch (error: IllegalStateException) {
+                Result.failure(error)
+            } catch (_: Exception) {
+                Result.failure(IllegalStateException("Raven VPN couldn't complete the request. Try again."))
             }
         }
 
-        return ServerListResponse(
-            ok = true,
-            policy = PolicyData(sessionDurationMinutes = 60, sessionQuotaMb = 1024, sessionQuotaBytes = 1073741824L),
-            servers = DEFAULT_FALLBACK_SERVERS
-        )
-    }
+    private suspend fun <T> authenticated(client: VeilGateApi, request: suspend (String) -> T): T {
+        val used = authLock.withLock {
+            credentials ?: vault!!.read()?.also { credentials = it } ?: enroll(client)
+        }
 
-    suspend fun requestTunnel(selectedServer: ServerNode?): Result<ConnectResponse> = withContext(Dispatchers.IO) {
-        try {
-            val deviceId = deviceManager.getDeviceId()
-            val request = ConnectRequest(
-                deviceId = deviceId,
-                nodeId = selectedServer?.id,
-                deviceName = "Android ${android.os.Build.MODEL ?: "Phone"}"
-            )
-            val response = getApi().connect(request)
-            if (response.isSuccessful && response.body() != null) {
-                Result.success(response.body()!!)
-            } else {
-                val errorBody = response.errorBody()?.string() ?: ""
-                Result.failure(Exception("Connect failed (${response.code()}): $errorBody"))
+        return try {
+            request(used.accessToken)
+        } catch (_: AccessTokenExpired) {
+            val replacement = authLock.withLock {
+                credentials?.takeIf { it !== used } ?: withContext(NonCancellable) {
+                    // Rotation and durable storage finish together, even if a screen is dismissed.
+                    val rotated = try {
+                        client.refresh(used.refreshToken)
+                    } catch (_: RefreshTokenRejected) {
+                        return@withContext enroll(client)
+                    }
+                    persist(rotated)
+                }
             }
-        } catch (e: Exception) {
-            Result.failure(e)
+            request(replacement.accessToken)
         }
     }
 
-    suspend fun notifyDisconnect(nodeId: String?): Result<Unit> = withContext(Dispatchers.IO) {
+    private suspend fun enroll(client: VeilGateApi): MobileCredentials = withContext(NonCancellable) {
+        persist(client.enroll(
+            deviceManager.getOrCreateInstallationId(),
+            DeviceManager.CURRENT_DISCLOSURE_VERSION
+        ))
+    }
+
+    private fun persist(tokens: MobileCredentials): MobileCredentials {
         try {
-            val deviceId = deviceManager.getDeviceId()
-            getApi().disconnect(DisconnectRequest(deviceId = deviceId, nodeId = nodeId))
-            Result.success(Unit)
-        } catch (e: Exception) {
-            Result.failure(e)
+            vault!!.write(tokens)
+        } catch (error: CredentialStorageException) {
+            credentials = null
+            throw error
         }
+        credentials = tokens
+        return tokens
     }
 }

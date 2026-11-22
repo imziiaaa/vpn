@@ -19,10 +19,12 @@ enum class DisconnectReason {
 }
 
 data class VpnUiState(
+    val hasConsent: Boolean = false,
     val status: VpnStatus = VpnStatus.DISCONNECTED,
     val selectedServer: ServerNode? = null,
     val availableServers: List<ServerNode> = emptyList(),
     val isLoadingServers: Boolean = false,
+    val serverListError: String? = null,
     val remainingSeconds: Long = 3600L,
     val totalTimeSeconds: Long = 3600L,
     val usedBytes: Long = 0L,

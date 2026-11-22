@@ -19,10 +19,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -48,6 +50,9 @@ import com.veilgate.vpn.ui.theme.TextSecondary
 fun ServerPickerSheet(
     servers: List<ServerNode>,
     selectedServer: ServerNode?,
+    isLoading: Boolean,
+    errorMessage: String?,
+    onRefresh: () -> Unit,
     onSelect: (ServerNode) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -69,21 +74,27 @@ fun ServerPickerSheet(
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Bold
             )
-            Text(
-                text = "Each session provides 1 hour and 1 GB data allocation.",
-                color = TextSecondary,
-                fontSize = 13.sp,
-                modifier = Modifier.padding(top = 4.dp, bottom = 16.dp)
-            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = onRefresh, enabled = !isLoading) {
+                    Text("Refresh", color = if (isLoading) TextMuted else NeonCyan)
+                }
+            }
 
-            if (servers.isEmpty()) {
+            if (isLoading || servers.isEmpty()) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(32.dp),
+                        .padding(vertical = 24.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text("No servers available. Check your connection or control plane settings.", color = TextMuted)
+                    if (isLoading) {
+                        CircularProgressIndicator(color = NeonCyan)
+                    } else {
+                        Text(
+                            text = errorMessage ?: "No VPN nodes are available. Tap Refresh to check again.",
+                            color = TextSecondary
+                        )
+                    }
                 }
             } else {
                 LazyColumn(

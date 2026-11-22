@@ -1,94 +1,124 @@
 package com.veilgate.vpn.ui
 
 import android.Manifest
+import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.withResumed
+import com.veilgate.vpn.data.model.ServerNode
 import com.veilgate.vpn.ui.screens.MainScreen
 import com.veilgate.vpn.ui.screens.VpnDisclosureDialog
 import com.veilgate.vpn.ui.theme.VeilGateTheme
 import com.veilgate.vpn.ui.viewmodel.MainViewModel
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
-
     private val viewModel: MainViewModel by viewModels()
+    private var pendingNodeId: String? = null
+    private var pendingNodeName: String? = null
 
-    private var showVpnDisclosureDialog by mutableStateOf(false)
-
-    // Activity result launcher for VpnService system permission dialog
     private val vpnPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        if (result.resultCode == RESULT_OK) {
-            viewModel.toggleConnection()
-        } else {
-            Toast.makeText(this, "VPN permission is required to create tunnel.", Toast.LENGTH_SHORT).show()
+        if (pendingNodeId != null) {
+            if (result.resultCode == RESULT_OK) {
+                lifecycleScope.launch { lifecycle.withResumed { requestNotificationsOrConnect() } }
+            } else {
+                clearPendingTarget()
+                viewModel.showError("VPN permission was declined. Tap Protect to request it again.")
+            }
         }
     }
 
-    // Activity result launcher for POST_NOTIFICATIONS on Android 13+
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) {
-        // Notification permission granted/denied
+        lifecycleScope.launch { lifecycle.withResumed { connectToPendingNode() } }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // Request notification permission on Android 13+
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-        }
+        pendingNodeId = savedInstanceState?.getString("pending_node_id")
+        pendingNodeName = savedInstanceState?.getString("pending_node_name")
 
         setContent {
             VeilGateTheme {
+                var showDisclosure by rememberSaveable { mutableStateOf(false) }
+                var showServerPicker by rememberSaveable { mutableStateOf(false) }
+
                 MainScreen(
                     viewModel = viewModel,
-                    onRequestVpnPermission = { onConnectTriggered() }
+                    showServerPicker = showServerPicker,
+                    onShowServerPicker = { showServerPicker = it },
+                    onReviewDisclosure = { showDisclosure = true },
+                    onRequestVpnPermission = ::prepareVpnAndConnect
                 )
 
-                if (showVpnDisclosureDialog) {
+                if (showDisclosure) {
                     VpnDisclosureDialog(
                         onAccept = {
-                            viewModel.setVpnDisclosureAccepted(true)
-                            showVpnDisclosureDialog = false
-                            prepareVpnAndConnect()
+                            showDisclosure = false
+                            if (viewModel.acceptDisclosure()) showServerPicker = true
                         },
-                        onDismiss = {
-                            showVpnDisclosureDialog = false
-                        }
+                        onDismiss = { showDisclosure = false }
                     )
                 }
             }
         }
     }
 
-    private fun onConnectTriggered() {
-        if (!viewModel.isVpnDisclosureAccepted()) {
-            showVpnDisclosureDialog = true
-        } else {
-            prepareVpnAndConnect()
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("pending_node_id", pendingNodeId)
+        outState.putString("pending_node_name", pendingNodeName)
+        super.onSaveInstanceState(outState)
+    }
+
+    private fun prepareVpnAndConnect(server: ServerNode) {
+        if (!viewModel.uiState.value.hasConsent || pendingNodeId != null) return
+
+        pendingNodeId = server.id
+        pendingNodeName = server.name
+        try {
+            val intent = VpnService.prepare(this)
+            if (intent != null) vpnPermissionLauncher.launch(intent)
+            else requestNotificationsOrConnect()
+        } catch (_: RuntimeException) {
+            clearPendingTarget()
+            viewModel.showError("Android couldn't open VPN permissions. Check VPN settings and try again.")
         }
     }
 
-    private fun prepareVpnAndConnect() {
-        android.util.Log.i("MainActivity", "prepareVpnAndConnect called!")
-        val intent = VpnService.prepare(this)
-        if (intent != null) {
-            android.util.Log.i("MainActivity", "Launching vpnPermissionLauncher...")
-            vpnPermissionLauncher.launch(intent)
+    private fun requestNotificationsOrConnect() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED &&
+            !getPreferences(MODE_PRIVATE).getBoolean("requested_vpn_notifications", false)
+        ) {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("requested_vpn_notifications", true).apply()
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         } else {
-            android.util.Log.i("MainActivity", "VPN already prepared, toggling connection...")
-            viewModel.toggleConnection()
+            connectToPendingNode()
         }
+    }
+
+    private fun connectToPendingNode() {
+        val nodeId = pendingNodeId ?: return
+        val nodeName = pendingNodeName ?: "VPN node"
+        clearPendingTarget()
+        viewModel.connect(nodeId, nodeName)
+    }
+
+    private fun clearPendingTarget() {
+        pendingNodeId = null
+        pendingNodeName = null
     }
 }

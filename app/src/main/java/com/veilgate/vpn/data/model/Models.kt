@@ -1,7 +1,5 @@
 package com.veilgate.vpn.data.model
 
-import com.google.gson.annotations.SerializedName
-
 data class ServerNode(
     val id: String,
     val name: String,
@@ -24,29 +22,6 @@ data class ServerListResponse(
     val ok: Boolean,
     val policy: PolicyData?,
     val servers: List<ServerNode>?
-)
-
-data class ConnectRequest(
-    val deviceId: String,
-    val nodeId: String?,
-    val deviceName: String = "Android Client"
-)
-
-data class SessionData(
-    val peerId: String,
-    val deviceId: String,
-    val nodeId: String,
-    val nodeName: String,
-    val location: String,
-    val allocatedIp: String,
-    val status: String,
-    val expiresAt: String,
-    val remainingSeconds: Long,
-    val dataLimitBytes: Long,
-    val rxBytes: Long = 0,
-    val txBytes: Long = 0,
-    val usedBytes: Long = 0,
-    val remainingBytes: Long = 0
 )
 
 data class AwgInterfaceConfig(
@@ -73,21 +48,11 @@ data class AwgPeerConfig(
     val persistentKeepalive: Int = 25
 )
 
-data class AwgConfigPayload(
-    @SerializedName("interface")
-    val interfaceConfig: AwgInterfaceConfig?,
-    val peer: AwgPeerConfig?
-)
-
-data class ConnectResponse(
-    val ok: Boolean,
-    val session: SessionData?,
-    val awgConfig: AwgConfigPayload?,
-    val confContent: String?,
-    val error: String?
-)
-
-data class DisconnectRequest(
-    val deviceId: String,
-    val nodeId: String?
+data class TunnelLease(
+    val sessionId: String,
+    val remainingSeconds: Long,
+    val dataLimitBytes: Long,
+    val usedBytes: Long,
+    val interfaceConfig: AwgInterfaceConfig,
+    val peer: AwgPeerConfig
 )
